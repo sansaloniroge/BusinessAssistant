@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -5,9 +7,9 @@ from uuid import UUID
 
 from packages.shared.schemas.chat import ChatFilters
 from packages.shared.schemas.common import TenantContext
-from packages.shared.schemas.filters import FieldFilter
-from packages.shared.schemas.filters import MetaFilters
-from ports import PermissionsService, Reranker, VectorStore
+from packages.shared.schemas.filters import FieldFilter, MetaFilters
+
+from apps.api.services.ports import EmbeddingService, PermissionsService, Reranker, VectorStore
 
 
 @dataclass(slots=True, frozen=True)
@@ -29,72 +31,64 @@ class RetrievalResult:
 
 class RetrievalService:
     DATE_FIELD = "doc_date"
+
     def __init__(
         self,
-        *,
         vector_store: VectorStore,
         permissions: PermissionsService,
+        embeddings: EmbeddingService,
         reranker: Reranker | None = None,
-    ):
+    ) -> None:
         self._vector_store = vector_store
         self._permissions = permissions
+        self._embeddings = embeddings
         self._reranker = reranker
 
     async def retrieve(
-            self,
-            *,
-            ctx: TenantContext,
-            question: str,
-            filters: ChatFilters | None,
-            top_k: int = 8,
-            use_rerank: bool = False,
+        self,
+        *,
+        ctx: TenantContext,
+        question: str,
+        filters: ChatFilters | None,
+        top_k: int,
+        use_rerank: bool,
     ) -> RetrievalResult:
-        # 1) Meta filters from user-facing ChatFilters
-        meta_filters: MetaFilters = self._chat_filters_to_meta(filters)
+        meta_filters: dict[str, Any] = {"tenant_id": str(ctx.tenant_id)}
 
-        # 2) Permissions filters (ACL / scopes / roles), merged in
-        perm_filters = await self._permissions.vector_filters_for(ctx)
+        meta_filters.update(self._chat_filters_to_meta(filters))
 
-        # 3) Tenant isolation ALWAYS applied
-        # (tenant_id is included as a hard filter)
-        final_filters: dict[str, Any] = {"tenant_id": ctx.tenant_id, **meta_filters, **perm_filters}
+        perm_filters: dict[str, Any] = await self._permissions.vector_filters_for(ctx)
+        meta_filters.update(perm_filters)
 
-        # 4) Vector search (current contract: query is text)
-        candidates = await self._vector_store.search(
-            tenant_id=ctx.tenant_id,
-            query=question,
+        q_emb = await self._embeddings.embed_query(text=question)
+
+        candidates: list[RetrievedChunk] = await self._vector_store.search_by_embedding(
+            tenant_id=str(ctx.tenant_id),
+            query_embedding=q_emb,
             top_k=top_k,
-            filters=final_filters,
+            filters=meta_filters,
         )
 
-        # 5) Optional rerank (if enabled + reranker available)
+        # 6) optional rerank
+        chunks = candidates
         reranked = False
         if use_rerank and self._reranker and candidates:
-            candidates = await self._reranker.rerank(question=question, chunks=candidates)
+            chunks = await self._reranker.rerank(question=question, chunks=candidates)
             reranked = True
 
-        # 6) Select final chunks (cap)
-        selected = candidates[:6]
+        selected = chunks[: min(6, len(chunks))]
+        strength = (sum(c.score for c in selected) / len(selected)) if selected else 0.0
 
-        # 7) Evidence strength: mean score (0.0 if none)
-        if selected:
-            evidence_strength = sum(c.score for c in selected) / float(len(selected))
-        else:
-            evidence_strength = 0.0
-
-        # 8) Debug payload for observability / tracing
         debug: dict[str, Any] = {
             "top_k": top_k,
-            "candidate_n": len(candidates),
             "selected_n": len(selected),
             "reranked": reranked,
-            "filters": final_filters,
+            "filters": meta_filters,
             "scores": [c.score for c in selected],
             "doc_ids": [str(c.doc_id) for c in selected],
             "chunk_ids": [c.chunk_id for c in selected],
         }
-
-        return RetrievalResult(chunks=selected, evidence_strength=evidence_strength, debug=debug)
+        return RetrievalResult(chunks=selected, evidence_strength=strength, debug=debug)
 
     def _chat_filters_to_meta(self, filters: ChatFilters | None) -> MetaFilters:
         meta: MetaFilters = {}
@@ -112,14 +106,12 @@ class RetrievalService:
 
         if filters.date_from:
             meta[f"{self.DATE_FIELD}__gte"] = FieldFilter(
-                op="$gte",
-                value=self._to_utc_iso(filters.date_from),
+                op="$gte", value=self._to_utc_iso(filters.date_from)
             )
 
         if filters.date_to:
             meta[f"{self.DATE_FIELD}__lte"] = FieldFilter(
-                op="$lte",
-                value=self._to_utc_iso(filters.date_to),
+                op="$lte", value=self._to_utc_iso(filters.date_to)
             )
 
         return meta

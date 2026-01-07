@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 from uuid import UUID
 
 from packages.shared.schemas.common import TenantContext
@@ -8,14 +8,19 @@ from retrieval_service import RetrievedChunk
 
 
 class VectorStore(Protocol):
-    async def search(
+    async def search_by_embedding(
         self,
         *,
         tenant_id: str,
-        query: str,
+        query_embedding: Sequence[float],
         top_k: int,
         filters: dict[str, Any],
     ) -> list[RetrievedChunk]:
+        ...
+
+
+class EmbeddingService(Protocol):
+    async def embed_query(self, *, text: str) -> list[float]:
         ...
 
 
