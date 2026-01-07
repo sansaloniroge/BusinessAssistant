@@ -3,8 +3,7 @@ from enum import Enum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-
-from .common import Citation, ConfidenceLevel, LLMUsage
+from common import Citation, ConfidenceLevel, LLMUsage
 
 
 class ChatMode(str, Enum):
