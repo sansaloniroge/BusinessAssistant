@@ -4,6 +4,7 @@ from uuid import UUID
 
 from packages.shared.schemas.chat import ChatFilters
 from packages.shared.schemas.common import TenantContext
+from ports import PermissionsService, Reranker, VectorStore
 
 
 @dataclass(slots=True, frozen=True)
@@ -24,7 +25,13 @@ class RetrievalResult:
 
 
 class RetrievalService:
-    def __init__(self, vector_store, permissions, reranker=None) -> None:
+    def __init__(
+        self,
+        *,
+        vector_store: VectorStore,
+        permissions: PermissionsService,
+        reranker: Reranker | None = None,
+    ):
         self._vector_store = vector_store
         self._permissions = permissions
         self._reranker = reranker
