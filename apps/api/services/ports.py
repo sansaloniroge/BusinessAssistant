@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, Sequence
-from uuid import UUID
+from typing import Any, Protocol, Sequence, TYPE_CHECKING
 
 from packages.shared.schemas.common import TenantContext
-from retrieval_service import RetrievedChunk
+
+if TYPE_CHECKING:
+    from .retrieval_service import RetrievedChunk
 
 
 class VectorStore(Protocol):
