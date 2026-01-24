@@ -5,6 +5,7 @@ import asyncpg
 
 from apps.api.services.ports import VectorStore
 from apps.api.services.retrieval_service import RetrievedChunk
+from packages.shared.schemas.filters import MetaFilters
 
 
 class PgvectorVectorStore(VectorStore):
@@ -24,7 +25,7 @@ class PgvectorVectorStore(VectorStore):
         tenant_id: str,
         query_embedding: Sequence[float],
         top_k: int,
-        filters: dict[str, Any],
+        filters: MetaFilters,
     ) -> list[RetrievedChunk]:
         where_sql, params = self._build_where(tenant_id=tenant_id, filters=filters)
 
@@ -60,6 +61,65 @@ class PgvectorVectorStore(VectorStore):
             )
         return out
 
+    async def upsert_chunks(self, *, tenant_id: str, chunks: Sequence[dict[str, Any]]) -> int:
+        if not chunks:
+            return 0
+
+        sql = """
+        INSERT INTO document_chunks (
+          tenant_id, chunk_id, doc_id, title, content, embedding,
+          metadata, embedding_model, chunker_version
+        )
+        VALUES (
+          $1, $2, $3::uuid, $4, $5, $6::vector,
+          $7::jsonb, $8, $9
+        )
+        ON CONFLICT (tenant_id, chunk_id) DO UPDATE SET
+          doc_id = EXCLUDED.doc_id,
+          title = EXCLUDED.title,
+          content = EXCLUDED.content,
+          embedding = EXCLUDED.embedding,
+          metadata = EXCLUDED.metadata,
+          embedding_model = EXCLUDED.embedding_model,
+          chunker_version = EXCLUDED.chunker_version
+        """
+
+        records: list[tuple[Any, ...]] = []
+        for c in chunks:
+            records.append(
+                (
+                    tenant_id,
+                    str(c["chunk_id"]),
+                    str(c["doc_id"]),
+                    str(c.get("title", "")),
+                    str(c.get("content", "")),
+                    self._to_pgvector(c["embedding"]),
+                    c.get("metadata", {}),
+                    str(c.get("embedding_model", "")),
+                    str(c.get("chunker_version", "")),
+                )
+            )
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany(sql, records)
+
+        return len(records)
+
+    async def delete_by_doc_id(self, *, tenant_id: str, doc_id: str) -> int:
+        sql = "DELETE FROM document_chunks WHERE tenant_id = $1 AND doc_id = $2::uuid"
+        async with self._pool.acquire() as conn:
+            res = await conn.execute(sql, tenant_id, doc_id)
+        # res: "DELETE <n>"
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def health(self) -> bool:
+        async with self._pool.acquire() as conn:
+            val = await conn.fetchval("SELECT 1")
+        return val == 1
+
     def _build_where(self, *, tenant_id: str, filters: dict[str, Any]) -> tuple[str, list[Any]]:
         """
         Interpreta filtros planos + FieldFilter(op=...) y los traduce a SQL.
@@ -79,7 +139,7 @@ class PgvectorVectorStore(VectorStore):
             if value is None:
                 clauses.append(sql_fragment)
                 return
-            clauses.append(f"{sql_fragment} ${arg_index}")
+            clauses.append(f"{sql_fragment}${arg_index}")
             params.append(value)
             arg_index += 1
 
@@ -116,15 +176,15 @@ class PgvectorVectorStore(VectorStore):
                 continue
 
             if op == "$in":
-                # val debe ser lista
+                # (metadata->>'k') = ANY($n)
                 add_clause(f"(metadata->>'{key}') = ANY(", list(map(str, val)))
                 clauses[-1] = clauses[-1] + ")"  # cierra ANY($n)
                 continue
 
             if op == "$contains_any":
-                # tags como JSON array -> usamos operador ?| sobre jsonb array de strings
-                # requiere que metadata.tags sea array de strings
-                add_clause(f"(metadata->'{key}') ?| ", list(map(str, val)))
+                # (metadata->'tags') ?| ARRAY['a','b']  -> usamos parámetro array de texto
+                add_clause(f"(metadata->'{key}') ?| ARRAY[", list(map(str, val)))
+                clauses[-1] = clauses[-1] + "]"
                 continue
 
             if op == "$gte":
