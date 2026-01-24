@@ -11,16 +11,19 @@ from packages.shared.schemas.common import LLMUsage
 @dataclass(slots=True, frozen=True)
 class LLMResult:
     text: str
-    usage: LLMUsage | None = None
+    usage: LLMUsage | Any | None = None
     latency_ms: int | None = None
 
 
-def normalize_usage(*, model: str, raw: Any, latency_ms: int) -> LLMUsage | None:
-    """Normaliza usage de providers. Acepta dicts/objetos y devuelve LLMUsage consistente."""
-    if raw is None:
-        return LLMUsage(model=model, latency_ms=latency_ms)
+def normalize_usage(*, model: str, raw: Any, latency_ms: int) -> LLMUsage:
+    """Normaliza usage de providers.
+
+    Acepta dicts/objetos/lib-specific usages y devuelve un LLMUsage consistente.
+    """
 
     def get(obj: Any, *keys: str, default: Any = 0) -> Any:
+        if obj is None:
+            return default
         if isinstance(obj, dict):
             for k in keys:
                 if k in obj:
@@ -76,8 +79,15 @@ class LLMClient:
 
         latency_ms = int((time.perf_counter() - t0) * 1000)
 
-        usage = res.usage
-        if usage is None or getattr(usage, "latency_ms", None) == 0:
-            usage = normalize_usage(model=model, raw=usage, latency_ms=latency_ms)
+        usage_raw = getattr(res, "usage", None)
+
+        # Normaliza si:
+        # - viene None
+        # - viene en formato dict/obj
+        # - o viene como LLMUsage sin latencia informada
+        if not isinstance(usage_raw, LLMUsage) or int(getattr(usage_raw, "latency_ms", 0) or 0) == 0:
+            usage = normalize_usage(model=model, raw=usage_raw, latency_ms=latency_ms)
+        else:
+            usage = usage_raw
 
         return LLMResult(text=res.text, usage=usage, latency_ms=latency_ms)

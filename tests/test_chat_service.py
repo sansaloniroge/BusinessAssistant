@@ -32,6 +32,11 @@ class _LLM:
         return LLMResult(text=self._text, usage=None)
 
 
+class _LLMTimeout:
+    async def generate(self, *, system, user, context, model):
+        raise TimeoutError("LLM generate timeout")
+
+
 class _Citations:
     def __init__(self, citations, strict_ok: bool = True):
         self._citations = citations
@@ -174,3 +179,41 @@ async def test_chat_service_happy_path_returns_llm_answer(tenant_ctx):
     assert res.answer == "Ok [C1]"
     assert res.citations != []
     assert res.retrieval_debug is not None
+
+
+@pytest.mark.asyncio
+async def test_chat_service_propagates_llm_timeout_and_does_not_persist_run(tenant_ctx):
+    chunk = RetrievedChunk(
+        chunk_id="c1",
+        doc_id=uuid4(),
+        title="T",
+        content="x",
+        score=0.95,
+        metadata={},
+    )
+    r = RetrievalResult(chunks=[chunk], evidence_strength=0.95, debug={})
+
+    convo = _ConversationsRepo()
+    msgs = _MessagesRepo()
+    run_repo = _RunRepo()
+
+    svc = ChatService(
+        retrieval=_Retrieval(r),
+        prompts=_Prompts(),
+        llm=_LLMTimeout(),
+        citations=_Citations([], strict_ok=True),
+        run_logger=_RunLogger(run_repo),
+        conversations_repo=convo,
+        messages_repo=msgs,
+    )
+
+    with pytest.raises(TimeoutError):
+        await svc.answer(ctx=tenant_ctx, req=ChatRequest(message="q", mode=ChatMode.normal))
+
+    # Se crea conversación y se inserta el mensaje del usuario, pero no el del asistente.
+    assert len(convo.created) == 1
+    assert len(msgs.messages) == 1
+    assert msgs.messages[0][1] == "user"
+
+    # No se persiste run porque la generación falló.
+    assert run_repo.inserted == []
