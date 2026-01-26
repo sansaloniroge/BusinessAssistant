@@ -45,6 +45,9 @@ class PgvectorVectorStore(VectorStore):
         """
 
         async with self._pool.acquire() as conn:
+            # RLS convention: app.tenant_id must be set per connection
+            # (still keep explicit filter in SQL as defense-in-depth)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
             rows = await conn.fetch(sql, self._to_pgvector(query_embedding), *params)
 
         out: list[RetrievedChunk] = []
@@ -68,17 +71,23 @@ class PgvectorVectorStore(VectorStore):
         sql = """
         INSERT INTO document_chunks (
           tenant_id, chunk_id, doc_id, title, content, embedding,
+          department, doc_type, tags, doc_date,
           metadata, embedding_model, chunker_version
         )
         VALUES (
           $1, $2, $3::uuid, $4, $5, $6::vector,
-          $7::jsonb, $8, $9
+          $7, $8, $9::text[], $10::timestamptz,
+          $11::jsonb, $12, $13
         )
         ON CONFLICT (tenant_id, chunk_id) DO UPDATE SET
           doc_id = EXCLUDED.doc_id,
           title = EXCLUDED.title,
           content = EXCLUDED.content,
           embedding = EXCLUDED.embedding,
+          department = EXCLUDED.department,
+          doc_type = EXCLUDED.doc_type,
+          tags = EXCLUDED.tags,
+          doc_date = EXCLUDED.doc_date,
           metadata = EXCLUDED.metadata,
           embedding_model = EXCLUDED.embedding_model,
           chunker_version = EXCLUDED.chunker_version
@@ -86,6 +95,17 @@ class PgvectorVectorStore(VectorStore):
 
         records: list[tuple[Any, ...]] = []
         for c in chunks:
+            md = dict(c.get("metadata") or {})
+
+            # Prefer explicit keys; fallback to metadata for denormalized columns
+            department = c.get("department") or md.get("department")
+            doc_type = c.get("doc_type") or md.get("doc_type")
+            tags = c.get("tags") or md.get("tags") or []
+            doc_date = c.get("doc_date") or md.get("doc_date")
+
+            if tags is None:
+                tags = []
+
             records.append(
                 (
                     tenant_id,
@@ -94,13 +114,18 @@ class PgvectorVectorStore(VectorStore):
                     str(c.get("title", "")),
                     str(c.get("content", "")),
                     self._to_pgvector(c["embedding"]),
-                    c.get("metadata", {}),
+                    department,
+                    doc_type,
+                    list(map(str, tags)) if isinstance(tags, (list, tuple)) else [str(tags)],
+                    doc_date,
+                    md,
                     str(c.get("embedding_model", "")),
                     str(c.get("chunker_version", "")),
                 )
             )
 
         async with self._pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
             await conn.executemany(sql, records)
 
         return len(records)
@@ -108,6 +133,7 @@ class PgvectorVectorStore(VectorStore):
     async def delete_by_doc_id(self, *, tenant_id: str, doc_id: str) -> int:
         sql = "DELETE FROM document_chunks WHERE tenant_id = $1 AND doc_id = $2::uuid"
         async with self._pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
             res = await conn.execute(sql, tenant_id, doc_id)
         # res: "DELETE <n>"
         try:
@@ -121,35 +147,32 @@ class PgvectorVectorStore(VectorStore):
         return val == 1
 
     def _build_where(self, *, tenant_id: str, filters: dict[str, Any]) -> tuple[str, list[Any]]:
-        """
-        Interpreta filtros planos + FieldFilter(op=...) y los traduce a SQL.
-        Convención:
-          - keys simples: metadata->>'key' == value
-          - tags contains_any: metadata->'tags' ?| array[...]
-          - rangos: key__gte / key__lte
+        """Traduce MetaFilters a SQL.
+
+        Estrategia:
+        - Filtros comunes van a columnas (department/doc_type/tags/doc_date) por performance.
+        - Resto cae a metadata JSONB.
+
+        Parámetros:
+        - $1 se reserva para el embedding.
+        - A partir de $2 van el resto.
         """
         clauses: list[str] = ["tenant_id = $2"]
-        params: list[Any] = [tenant_id]  # NOTE: $2 because $1 is embedding
+        params: list[Any] = [tenant_id]  # $2
 
-        # empezamos en $3 (porque $1=embedding, $2=tenant_id)
-        arg_index = 3
+        arg_index = 3  # $1=embedding, $2=tenant_id
 
-        def add_clause(sql_fragment: str, value: Any | None = None) -> None:
+        def add_param(value: Any) -> str:
             nonlocal arg_index
-            if value is None:
-                clauses.append(sql_fragment)
-                return
-            clauses.append(f"{sql_fragment}${arg_index}")
+            placeholder = f"${arg_index}"
             params.append(value)
             arg_index += 1
+            return placeholder
 
-        # filters contiene tenant_id también; lo ignoramos aquí porque ya va en columna
         for key, value in filters.items():
             if key == "tenant_id":
                 continue
 
-            # FieldFilter (pydantic) llega como dict o como objeto según tu codepath.
-            # Soportamos ambos sin complicar:
             op = None
             val = None
             if isinstance(value, dict) and "op" in value and "value" in value:
@@ -158,45 +181,75 @@ class PgvectorVectorStore(VectorStore):
             elif hasattr(value, "op") and hasattr(value, "value"):
                 op = getattr(value, "op")
                 val = getattr(value, "value")
+            else:
+                val = value
 
-            # Convención rango: doc_date__gte / doc_date__lte
+            # Date range convention
             if key.endswith("__gte"):
                 field = key.removesuffix("__gte")
-                add_clause(f"(metadata->>'{field}')::timestamptz >= ", val)
+                if field == "doc_date":
+                    ph = add_param(val)
+                    clauses.append(f"doc_date >= {ph}::timestamptz")
+                else:
+                    ph = add_param(val)
+                    clauses.append(f"(metadata->>'{field}')::timestamptz >= {ph}::timestamptz")
                 continue
 
             if key.endswith("__lte"):
                 field = key.removesuffix("__lte")
-                add_clause(f"(metadata->>'{field}')::timestamptz <= ", val)
+                if field == "doc_date":
+                    ph = add_param(val)
+                    clauses.append(f"doc_date <= {ph}::timestamptz")
+                else:
+                    ph = add_param(val)
+                    clauses.append(f"(metadata->>'{field}')::timestamptz <= {ph}::timestamptz")
                 continue
 
-            # Operadores soportados
+            # Column fast-path: department/doc_type
+            if key in {"department", "doc_type"}:
+                if op is None or op == "$eq":
+                    ph = add_param(str(val))
+                    clauses.append(f"{key} = {ph}")
+                    continue
+
+            # Column fast-path: tags contains_any
+            if key == "tags" and op == "$contains_any":
+                # array overlap: tags && ARRAY[...]
+                ph = add_param(list(map(str, val or [])))
+                clauses.append(f"tags && {ph}::text[]")
+                continue
+
+            # JSONB fallback operators
             if op == "$eq":
-                add_clause(f"(metadata->>'{key}') = ", str(val))
+                ph = add_param(str(val))
+                clauses.append(f"(metadata->>'{key}') = {ph}")
                 continue
 
             if op == "$in":
-                # (metadata->>'k') = ANY($n)
-                add_clause(f"(metadata->>'{key}') = ANY(", list(map(str, val)))
-                clauses[-1] = clauses[-1] + ")"  # cierra ANY($n)
+                ph = add_param(list(map(str, val or [])))
+                clauses.append(f"(metadata->>'{key}') = ANY({ph}::text[])")
                 continue
 
             if op == "$contains_any":
-                # (metadata->'tags') ?| ARRAY['a','b']  -> usamos parámetro array de texto
-                add_clause(f"(metadata->'{key}') ?| ARRAY[", list(map(str, val)))
-                clauses[-1] = clauses[-1] + "]"
+                # JSONB array contains any of strings
+                # (metadata->'tags') ?| ARRAY['a','b']
+                ph = add_param(list(map(str, val or [])))
+                clauses.append(f"(metadata->'{key}') ?| {ph}::text[]")
                 continue
 
             if op == "$gte":
-                add_clause(f"(metadata->>'{key}')::timestamptz >= ", val)
+                ph = add_param(val)
+                clauses.append(f"(metadata->>'{key}')::timestamptz >= {ph}::timestamptz")
                 continue
 
             if op == "$lte":
-                add_clause(f"(metadata->>'{key}')::timestamptz <= ", val)
+                ph = add_param(val)
+                clauses.append(f"(metadata->>'{key}')::timestamptz <= {ph}::timestamptz")
                 continue
 
-            # Fallback: igualdad simple para strings/escalares
-            add_clause(f"(metadata->>'{key}') = ", str(value))
+            # Fallback: equality
+            ph = add_param(str(val))
+            clauses.append(f"(metadata->>'{key}') = {ph}")
 
         where_sql = " AND ".join(clauses)
         return where_sql, params
