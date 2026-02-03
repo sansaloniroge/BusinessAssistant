@@ -68,6 +68,46 @@ class PgvectorVectorStore(VectorStore):
         if not chunks:
             return 0
 
+        # Primero, preparar inserción mínima en documents para cumplir la FK
+        docs_sql = """
+        INSERT INTO documents (
+          tenant_id, doc_id, title, status, source_type, access_level,
+          department, doc_type, tags, doc_date, metadata
+        ) VALUES (
+          $1, $2::uuid, $3, 'ready', 'upload', 'public',
+          $4, $5, $6::text[], $7::timestamptz, $8::jsonb
+        )
+        ON CONFLICT (tenant_id, doc_id) DO NOTHING
+        """
+
+        docs_records: list[tuple[Any, ...]] = []
+        seen_docs: set[tuple[str, str]] = set()
+        for c in chunks:
+            md = dict(c.get("metadata") or {})
+            department = c.get("department") or md.get("department")
+            doc_type = c.get("doc_type") or md.get("doc_type")
+            tags = c.get("tags") or md.get("tags") or []
+            doc_date = c.get("doc_date") or md.get("doc_date")
+
+            key = (tenant_id, str(c["doc_id"]))
+            if key in seen_docs:
+                continue
+            seen_docs.add(key)
+
+            docs_records.append(
+                (
+                    tenant_id,
+                    str(c["doc_id"]),
+                    str(c.get("title", "")) or "Untitled",
+                    department,
+                    doc_type,
+                    list(map(str, tags)) if isinstance(tags, (list, tuple)) else [str(tags)],
+                    doc_date,
+                    md,
+                )
+            )
+
+        # Ahora, preparar los registros de chunks
         sql = """
         INSERT INTO document_chunks (
           tenant_id, chunk_id, doc_id, title, content, embedding,
@@ -96,13 +136,10 @@ class PgvectorVectorStore(VectorStore):
         records: list[tuple[Any, ...]] = []
         for c in chunks:
             md = dict(c.get("metadata") or {})
-
-            # Prefer explicit keys; fallback to metadata for denormalized columns
             department = c.get("department") or md.get("department")
             doc_type = c.get("doc_type") or md.get("doc_type")
             tags = c.get("tags") or md.get("tags") or []
             doc_date = c.get("doc_date") or md.get("doc_date")
-
             if tags is None:
                 tags = []
 
@@ -126,6 +163,8 @@ class PgvectorVectorStore(VectorStore):
 
         async with self._pool.acquire() as conn:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            if docs_records:
+                await conn.executemany(docs_sql, docs_records)
             await conn.executemany(sql, records)
 
         return len(records)
@@ -136,6 +175,16 @@ class PgvectorVectorStore(VectorStore):
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
             res = await conn.execute(sql, tenant_id, doc_id)
         # res: "DELETE <n>"
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def delete_by_chunk_id(self, *, tenant_id: str, chunk_id: str) -> int:
+        sql = "DELETE FROM document_chunks WHERE tenant_id = $1 AND chunk_id = $2"
+        async with self._pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            res = await conn.execute(sql, tenant_id, chunk_id)
         try:
             return int(res.split()[-1])
         except Exception:
