@@ -68,6 +68,13 @@ class PgvectorVectorStore(VectorStore):
         if not chunks:
             return 0
 
+        # Fail-fast: exigir embedding_model y chunker_version
+        for c in chunks:
+            em = str(c.get("embedding_model", "") or "").strip()
+            cv = str(c.get("chunker_version", "") or "").strip()
+            if not em or not cv:
+                raise ValueError("upsert_chunks requiere 'embedding_model' y 'chunker_version' no vacíos")
+
         # Primero, preparar inserción mínima en documents para cumplir la FK
         docs_sql = """
         INSERT INTO documents (
@@ -134,6 +141,7 @@ class PgvectorVectorStore(VectorStore):
         """
 
         records: list[tuple[Any, ...]] = []
+        chunk_ids: list[str] = []
         for c in chunks:
             md = dict(c.get("metadata") or {})
             department = c.get("department") or md.get("department")
@@ -143,10 +151,13 @@ class PgvectorVectorStore(VectorStore):
             if tags is None:
                 tags = []
 
+            chunk_id = str(c["chunk_id"])
+            chunk_ids.append(chunk_id)
+
             records.append(
                 (
                     tenant_id,
-                    str(c["chunk_id"]),
+                    chunk_id,
                     str(c["doc_id"]),
                     str(c.get("title", "")),
                     str(c.get("content", "")),
@@ -163,6 +174,35 @@ class PgvectorVectorStore(VectorStore):
 
         async with self._pool.acquire() as conn:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+
+            # Fail-fast: si ya existe el chunk, no permitir cambiar embedding_model/chunker_version
+            existing = await conn.fetch(
+                """
+                SELECT chunk_id, embedding_model, chunker_version
+                FROM document_chunks
+                WHERE tenant_id = $1 AND chunk_id = ANY($2::text[])
+                """,
+                tenant_id,
+                chunk_ids,
+            )
+            if existing:
+                by_id = {r["chunk_id"]: (r["embedding_model"], r["chunker_version"]) for r in existing}
+                for c in chunks:
+                    cid = str(c["chunk_id"])
+                    cur = by_id.get(cid)
+                    if not cur:
+                        continue
+                    em_new = str(c.get("embedding_model", "") or "").strip()
+                    cv_new = str(c.get("chunker_version", "") or "").strip()
+                    em_old, cv_old = cur
+                    if em_old != em_new or cv_old != cv_new:
+                        raise RuntimeError(
+                            "VectorStore fail-fast: chunk existente con embedding_model/chunker_version distintos. "
+                            f"tenant_id={tenant_id} chunk_id={cid} "
+                            f"db=({em_old},{cv_old}) incoming=({em_new},{cv_new}). "
+                            "Reindexa explícitamente antes de cambiar modelo/version."
+                        )
+
             if docs_records:
                 await conn.executemany(docs_sql, docs_records)
             await conn.executemany(sql, records)
