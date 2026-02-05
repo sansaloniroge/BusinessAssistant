@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: businessassistant-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-businessassistant}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: businessassistant-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+
