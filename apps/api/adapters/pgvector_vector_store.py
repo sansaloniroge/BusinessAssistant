@@ -16,6 +16,8 @@ class PgvectorVectorStore(VectorStore):
     - Vector similarity via cosine distance
     """
 
+    EMBEDDING_DIM: int = 1536
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
@@ -27,6 +29,10 @@ class PgvectorVectorStore(VectorStore):
         top_k: int,
         filters: MetaFilters,
     ) -> list[RetrievedChunk]:
+        # Fail-fast: query embedding dimension
+        if len(query_embedding) != self.EMBEDDING_DIM:
+            raise ValueError(f"query_embedding debe tener dimensión {self.EMBEDDING_DIM}, got={len(query_embedding)}")
+
         where_sql, params = self._build_where(tenant_id=tenant_id, filters=filters)
 
         # cosine distance: lower is better, so score = 1 - distance (rough signal)
@@ -68,14 +74,20 @@ class PgvectorVectorStore(VectorStore):
         if not chunks:
             return 0
 
-        # Fail-fast: exigir embedding_model y chunker_version
+        # Fail-fast: require embedding_model and chunker_version
         for c in chunks:
             em = str(c.get("embedding_model", "") or "").strip()
             cv = str(c.get("chunker_version", "") or "").strip()
             if not em or not cv:
                 raise ValueError("upsert_chunks requiere 'embedding_model' y 'chunker_version' no vacíos")
+            # Fail-fast: dimensión
+            emb = c.get("embedding")
+            if not isinstance(emb, (list, tuple)) or len(emb) != self.EMBEDDING_DIM:
+                raise ValueError(
+                    f"embedding debe ser lista/tupla de longitud {self.EMBEDDING_DIM}, got={0 if emb is None else len(emb)}"
+                )
 
-        # Primero, preparar inserción mínima en documents para cumplir la FK
+        # First, prepare minimal insertion in documents to comply with FK
         docs_sql = """
         INSERT INTO documents (
           tenant_id, doc_id, title, status, source_type, access_level,
@@ -114,7 +126,7 @@ class PgvectorVectorStore(VectorStore):
                 )
             )
 
-        # Ahora, preparar los registros de chunks
+        # Now, prepare the chunk records
         sql = """
         INSERT INTO document_chunks (
           tenant_id, chunk_id, doc_id, title, content, embedding,
@@ -175,7 +187,7 @@ class PgvectorVectorStore(VectorStore):
         async with self._pool.acquire() as conn:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
 
-            # Fail-fast: si ya existe el chunk, no permitir cambiar embedding_model/chunker_version
+            # Fail-fast: if the chunk already exists, do not allow changing embedding_model/chunker_version
             existing = await conn.fetch(
                 """
                 SELECT chunk_id, embedding_model, chunker_version
@@ -236,15 +248,15 @@ class PgvectorVectorStore(VectorStore):
         return val == 1
 
     def _build_where(self, *, tenant_id: str, filters: dict[str, Any]) -> tuple[str, list[Any]]:
-        """Traduce MetaFilters a SQL.
+        """Translate MetaFilters to SQL.
 
-        Estrategia:
-        - Filtros comunes van a columnas (department/doc_type/tags/doc_date) por performance.
-        - Resto cae a metadata JSONB.
+        Strategy:
+        - Common filters go to columns (department/doc_type/tags/doc_date) for performance.
+        - The rest goes to JSONB metadata.
 
-        Parámetros:
-        - $1 se reserva para el embedding.
-        - A partir de $2 van el resto.
+        Parameters:
+        - $1 is reserved for embedding.
+        - From $2 onwards go the rest.
         """
         clauses: list[str] = ["tenant_id = $2"]
         params: list[Any] = [tenant_id]  # $2
@@ -345,5 +357,5 @@ class PgvectorVectorStore(VectorStore):
 
     @staticmethod
     def _to_pgvector(v: Sequence[float]) -> str:
-        # asyncpg no tiene tipo vector nativo; pgvector acepta string tipo '[1,2,3]'
+        # asyncpg does not have a native vector type; pgvector accepts string type '[1,2,3]'
         return "[" + ",".join(f"{x:.8f}" for x in v) + "]"

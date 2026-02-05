@@ -7,7 +7,7 @@ from packages.shared.schemas.common import LLMUsage
 
 @dataclass(slots=True, frozen=True)
 class RunLogInput:
-    tenant_id: UUID
+    tenant_id: str
     user_id: UUID
     conversation_id: UUID
     question: str

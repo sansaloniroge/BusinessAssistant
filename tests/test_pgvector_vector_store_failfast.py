@@ -63,7 +63,7 @@ async def test_upsert_chunks_fail_fast_on_embedding_model_or_chunker_version_mis
             "doc_id": "00000000-0000-0000-0000-000000000001",
             "title": "T",
             "content": "x",
-            "embedding": [0.0] * 3,
+            "embedding": [0.0] * PgvectorVectorStore.EMBEDDING_DIM,  # dimensión válida
             "metadata": {},
             "embedding_model": "new-model",
             "chunker_version": "v1",
@@ -90,7 +90,7 @@ async def test_upsert_chunks_requires_embedding_model_and_chunker_version():
             "doc_id": "00000000-0000-0000-0000-000000000001",
             "title": "T",
             "content": "x",
-            "embedding": [0.0] * 3,
+            "embedding": [0.0] * PgvectorVectorStore.EMBEDDING_DIM,
             "metadata": {},
             "embedding_model": "",
             "chunker_version": "v1",
@@ -99,4 +99,3 @@ async def test_upsert_chunks_requires_embedding_model_and_chunker_version():
 
     with pytest.raises(ValueError):
         await store.upsert_chunks(tenant_id="t1", chunks=chunks)
-

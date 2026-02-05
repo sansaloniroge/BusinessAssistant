@@ -19,7 +19,7 @@ class ConfidenceLevel(str, Enum):
 class TenantContext(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    tenant_id: UUID
+    tenant_id: str
     user_id: UUID
     role: str
     scopes: list[str] = Field(default_factory=list)

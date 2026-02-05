@@ -37,7 +37,7 @@ class DocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    tenant_id: UUID
+    tenant_id: str
     title: str
     source_type: DocumentSourceType
     access_level: AccessLevel
