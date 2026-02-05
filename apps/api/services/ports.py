@@ -29,6 +29,10 @@ class VectorStore(Protocol):
         """Borra todos los chunks de un doc. Devuelve nº de filas borradas."""
         ...
 
+    async def delete_by_chunk_id(self, *, tenant_id: str, chunk_id: str) -> int:
+        """Borra un chunk concreto por su chunk_id. Devuelve nº de filas borradas."""
+        ...
+
     async def health(self) -> bool:
         ...
 
