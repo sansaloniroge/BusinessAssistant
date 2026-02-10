@@ -78,6 +78,14 @@ class _MetricsSinkSpy:
         self.records.append((stage, metrics))
 
 
+class _DLQSpy:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, *, tenant_id: str, doc_id, reason: str, payload: dict):
+        self.sent.append({"tenant_id": tenant_id, "doc_id": doc_id, "reason": reason, "payload": payload})
+
+
 @pytest.mark.asyncio
 async def test_pipeline_happy_path_records_metrics_and_marks_ready():
     ctx = TenantContext(tenant_id="t1", user_id=uuid4(), role="user", scopes=[])
@@ -103,12 +111,15 @@ async def test_pipeline_happy_path_records_metrics_and_marks_ready():
         metrics=metrics,
         embedding_model="text-embedding-3-small",
         chunker_version="v1",
+        max_retries=0,
+        backoff_base_s=0.0,
+        backoff_max_s=0.0,
     )
 
     await svc.run(ctx=ctx, doc_id=doc_id, base_metadata={"department": "HR", "doc_type": "policy"})
 
     stages = [s for s, _ in metrics.records]
-    assert stages == ["extract", "load", "normalize", "chunk", "embed", "upsert"]
+    assert stages == ["extract", "load", "normalize", "chunk", "embed", "upsert", "attempt"]
 
     # Debe marcar ready y cerrar intento con success
     assert any(c[0] == "mark_ready" for c in ingestion.calls)
@@ -129,16 +140,22 @@ async def test_pipeline_happy_path_records_metrics_and_marks_ready():
 
 
 @pytest.mark.asyncio
-async def test_pipeline_failure_marks_failed_and_records_error():
-    class _BadExtractor:
+async def test_pipeline_transient_failure_retries_then_succeeds_and_does_not_mark_failed():
+    class _FlakyExtractor:
+        def __init__(self):
+            self.calls = 0
+
         async def extract(self, *, tenant_id: str, doc_id):
-            raise RuntimeError("boom")
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("boom")
+            return b"Hello world"
 
     ctx = TenantContext(tenant_id="t1", user_id=uuid4(), role="user", scopes=[])
     doc_id = uuid4()
 
     ingestion = _IngestionSpy()
-    extractor = _BadExtractor()
+    extractor = _FlakyExtractor()
     loader = _Loader()
     normalizer = _Normalizer()
     chunker = _Chunker()
@@ -157,15 +174,79 @@ async def test_pipeline_failure_marks_failed_and_records_error():
         metrics=metrics,
         embedding_model="text-embedding-3-small",
         chunker_version="v1",
+        max_retries=1,
+        backoff_base_s=0.0,
+        backoff_max_s=0.0,
+    )
+
+    await svc.run(ctx=ctx, doc_id=doc_id)
+
+    # Dos intentos: 2 start_attempt y 2 end_attempt (falso y luego true)
+    assert len([c for c in ingestion.calls if c[0] == "start_attempt"]) == 2
+    ends = [c for c in ingestion.calls if c[0] == "end_attempt"]
+    assert len(ends) == 2
+    assert ends[0][-1] is False
+    assert ends[1][-1] is True
+
+    assert any(c[0] == "mark_ready" for c in ingestion.calls)
+    assert not any(c[0] == "mark_failed" for c in ingestion.calls)
+
+    stages = [s for s, _ in metrics.records]
+    assert "attempt_error" in stages
+    assert "attempt" in stages
+
+
+@pytest.mark.asyncio
+async def test_pipeline_failure_marks_failed_records_failed_and_sends_dlq_after_retries():
+    class _BadExtractor:
+        async def extract(self, *, tenant_id: str, doc_id):
+            raise RuntimeError("boom")
+
+    ctx = TenantContext(tenant_id="t1", user_id=uuid4(), role="user", scopes=[])
+    doc_id = uuid4()
+
+    ingestion = _IngestionSpy()
+    extractor = _BadExtractor()
+    loader = _Loader()
+    normalizer = _Normalizer()
+    chunker = _Chunker()
+    embeddings = _Embeddings()
+    vector_store = _VectorStoreSpy()
+    metrics = _MetricsSinkSpy()
+    dlq = _DLQSpy()
+
+    svc = PipelineService(
+        ingestion=ingestion,
+        extractor=extractor,
+        loader=loader,
+        normalizer=normalizer,
+        chunker=chunker,
+        embeddings=embeddings,
+        vector_store=vector_store,
+        metrics=metrics,
+        embedding_model="text-embedding-3-small",
+        chunker_version="v1",
+        max_retries=1,
+        backoff_base_s=0.0,
+        backoff_max_s=0.0,
+        dlq=dlq,
     )
 
     with pytest.raises(RuntimeError):
         await svc.run(ctx=ctx, doc_id=doc_id)
 
-    # Debe marcar failed y cerrar intento con failed
+    # Debe marcar failed tras agotar reintentos
     assert any(c[0] == "mark_failed" for c in ingestion.calls)
-    assert any(c[0] == "end_attempt" and c[-1] is False for c in ingestion.calls)
 
-    # Métrica de error registrada
-    assert any(s == "error" for s, _ in metrics.records)
+    stages = [s for s, _ in metrics.records]
+    assert "attempt_error" in stages
+    assert "failed" in stages
 
+    # DLQ debe recibir 1 mensaje
+    assert len(dlq.sent) == 1
+    msg = dlq.sent[0]
+    assert msg["tenant_id"] == "t1"
+    assert msg["doc_id"] == doc_id
+    assert msg["reason"].startswith("pipeline_failed_after_retries:RuntimeError")
+    assert "trace" in msg["payload"]
+    assert "error" in msg["payload"]
