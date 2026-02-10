@@ -86,5 +86,11 @@ class Chunker(Protocol):
 
 class MetricsSink(Protocol):
     async def record(self, *, tenant_id: str, doc_id: "UUID", stage: str, metrics: dict[str, Any]) -> None:
-        """Registra métricas por etapa: latencia_ms, num_items, errores, etc."""
+        """Registra métricas por etapa: latencia_ms, num_items, errores, contadores, etc."""
+        ...
+
+
+class DeadLetterQueue(Protocol):
+    async def send(self, *, tenant_id: str, doc_id: "UUID", reason: str, payload: dict[str, Any]) -> None:
+        """Envía a DLQ con motivo y payload para posterior reintento/análisis."""
         ...
