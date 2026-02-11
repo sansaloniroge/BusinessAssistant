@@ -80,6 +80,12 @@ async def test_retrieve_merges_filters_and_computes_strength(tenant_ctx):
     assert merged["tags"].op == "$contains_any"
     assert merged["acl"].op == "$eq"
 
+    # Nuevo debug: separación de filtros
+    assert res.debug["base_filters"]["tenant_id"] == str(tenant_ctx.tenant_id)
+    assert "department" in res.debug["base_filters"]
+    assert "acl" in res.debug["perm_filters"]
+    assert "acl" in res.debug["effective_filters"]
+
 
 @pytest.mark.asyncio
 async def test_retrieve_reranks_when_enabled(tenant_ctx):
@@ -99,4 +105,3 @@ async def test_retrieve_reranks_when_enabled(tenant_ctx):
     res = await svc.retrieve(ctx=tenant_ctx, question="q", filters=None, top_k=2, use_rerank=True)
     assert res.chunks[0].chunk_id == "c2"
     assert res.debug["reranked"] is True
-
