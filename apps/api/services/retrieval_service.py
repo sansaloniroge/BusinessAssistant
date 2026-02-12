@@ -32,6 +32,10 @@ class RetrievalResult:
 class RetrievalService:
     DATE_FIELD = "doc_date"
 
+    # retrieval limits (V1)
+    MAX_SELECTED_CHUNKS: int = 6
+    MAX_CHUNKS_PER_DOC: int = 2
+
     def __init__(
         self,
         vector_store: VectorStore,
@@ -53,12 +57,15 @@ class RetrievalService:
         top_k: int,
         use_rerank: bool,
     ) -> RetrievalResult:
-        meta_filters: dict[str, Any] = {"tenant_id": str(ctx.tenant_id)}
+        # 1) Filtros base de producto (siempre tenant)
+        base_filters: dict[str, Any] = {"tenant_id": str(ctx.tenant_id)}
+        base_filters.update(self._chat_filters_to_meta(filters))
 
-        meta_filters.update(self._chat_filters_to_meta(filters))
-
+        # 2) Filtros de permisos (siempre)
         perm_filters: dict[str, Any] = await self._permissions.vector_filters_for(ctx)
-        meta_filters.update(perm_filters)
+
+        # 3) Filtros efectivos
+        effective_filters: dict[str, Any] = {**base_filters, **perm_filters}
 
         q_emb = await self._embeddings.embed_query(text=question)
 
@@ -66,29 +73,60 @@ class RetrievalService:
             tenant_id=str(ctx.tenant_id),
             query_embedding=q_emb,
             top_k=top_k,
-            filters=meta_filters,
+            filters=effective_filters,
         )
 
-        # 6) optional rerank
+        # 4) optional rerank (controlado)
         chunks = candidates
         reranked = False
         if use_rerank and self._reranker and candidates:
             chunks = await self._reranker.rerank(question=question, chunks=candidates)
             reranked = True
 
-        selected = chunks[: min(6, len(chunks))]
+        # 5) Selección “seria”: diversidad + límites explícitos
+        selected = self._select_diverse(chunks)
         strength = (sum(c.score for c in selected) / len(selected)) if selected else 0.0
 
         debug: dict[str, Any] = {
             "top_k": top_k,
+            "candidate_n": len(candidates),
             "selected_n": len(selected),
             "reranked": reranked,
-            "filters": meta_filters,
+            "base_filters": base_filters,
+            "perm_filters": perm_filters,
+            "effective_filters": effective_filters,
+            "candidate_scores": [c.score for c in candidates[: min(len(candidates), 20)]],
             "scores": [c.score for c in selected],
             "doc_ids": [str(c.doc_id) for c in selected],
+            "doc_ids_unique": list(dict.fromkeys(str(c.doc_id) for c in selected)),
             "chunk_ids": [c.chunk_id for c in selected],
         }
         return RetrievalResult(chunks=selected, evidence_strength=strength, debug=debug)
+
+    def _select_diverse(self, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+        """Selecciona chunks con diversidad por doc_id y límites explícitos.
+
+        Estrategia V1:
+        - Mantener el orden actual (ya vector o rerank).
+        - Cap por documento (MAX_CHUNKS_PER_DOC).
+        - Total máximo (MAX_SELECTED_CHUNKS).
+        """
+        if not chunks:
+            return []
+
+        per_doc: dict[str, int] = {}
+        out: list[RetrievedChunk] = []
+
+        for c in chunks:
+            doc_key = str(c.doc_id)
+            if per_doc.get(doc_key, 0) >= self.MAX_CHUNKS_PER_DOC:
+                continue
+            out.append(c)
+            per_doc[doc_key] = per_doc.get(doc_key, 0) + 1
+            if len(out) >= self.MAX_SELECTED_CHUNKS:
+                break
+
+        return out
 
     def _chat_filters_to_meta(self, filters: ChatFilters | None) -> MetaFilters:
         meta: MetaFilters = {}

@@ -80,6 +80,12 @@ async def test_retrieve_merges_filters_and_computes_strength(tenant_ctx):
     assert merged["tags"].op == "$contains_any"
     assert merged["acl"].op == "$eq"
 
+    # Nuevo debug: separación de filtros
+    assert res.debug["base_filters"]["tenant_id"] == str(tenant_ctx.tenant_id)
+    assert "department" in res.debug["base_filters"]
+    assert "acl" in res.debug["perm_filters"]
+    assert "acl" in res.debug["effective_filters"]
+
 
 @pytest.mark.asyncio
 async def test_retrieve_reranks_when_enabled(tenant_ctx):
@@ -100,3 +106,39 @@ async def test_retrieve_reranks_when_enabled(tenant_ctx):
     assert res.chunks[0].chunk_id == "c2"
     assert res.debug["reranked"] is True
 
+
+@pytest.mark.asyncio
+async def test_retrieve_caps_chunks_per_doc_and_total_limit(tenant_ctx):
+    doc_a = uuid4()
+    doc_b = uuid4()
+    doc_c = uuid4()
+
+    # Orden ya viene por score/orden de candidates; el selector debe:
+    # - coger como mucho 2 del doc_a aunque haya 3
+    # - respetar el orden
+    chunks = [
+        RetrievedChunk(chunk_id="a1", doc_id=doc_a, title="A", content="x", score=0.99, metadata={}),
+        RetrievedChunk(chunk_id="a2", doc_id=doc_a, title="A", content="x", score=0.98, metadata={}),
+        RetrievedChunk(chunk_id="a3", doc_id=doc_a, title="A", content="x", score=0.97, metadata={}),
+        RetrievedChunk(chunk_id="b1", doc_id=doc_b, title="B", content="y", score=0.96, metadata={}),
+        RetrievedChunk(chunk_id="b2", doc_id=doc_b, title="B", content="y", score=0.95, metadata={}),
+        RetrievedChunk(chunk_id="c1", doc_id=doc_c, title="C", content="z", score=0.94, metadata={}),
+        # uno más para forzar límite total si se extendiera
+        RetrievedChunk(chunk_id="c2", doc_id=doc_c, title="C", content="z", score=0.93, metadata={}),
+    ]
+
+    svc = RetrievalService(vector_store=_VectorStore(chunks), permissions=_Perms(), embeddings=_Emb())
+
+    res = await svc.retrieve(ctx=tenant_ctx, question="q", filters=None, top_k=50, use_rerank=False)
+
+    # cap por doc: a3 no puede entrar
+    assert [c.chunk_id for c in res.chunks].count("a1") == 1
+    assert [c.chunk_id for c in res.chunks].count("a2") == 1
+    assert "a3" not in [c.chunk_id for c in res.chunks]
+
+    # total limit: 6 máximo
+    assert len(res.chunks) <= svc.MAX_SELECTED_CHUNKS
+    assert res.debug["selected_n"] == len(res.chunks)
+
+    # y debe preservar el orden relativo esperado (a1, a2, b1, b2, c1, c2)
+    assert [c.chunk_id for c in res.chunks] == ["a1", "a2", "b1", "b2", "c1", "c2"]
