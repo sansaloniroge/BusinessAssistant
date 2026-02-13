@@ -60,3 +60,36 @@ def test_validate_strict_requires_at_least_one_valid_citation():
     )
     assert s.validate_strict("Hay [C1]", [any_citation]) is True
 
+
+def test_validate_strict_rejects_out_of_range_index_when_chunk_count_provided():
+    s = CitationService()
+    any_citation = Citation(
+        doc_id=uuid4(),
+        title="Doc",
+        chunk_id="c1",
+        snippet="x",
+        section=None,
+        page=None,
+        score=0.1,
+        metadata={},
+    )
+
+    # Solo había 2 chunks recuperados; [C999] debe forzar rechazo (coverage muy baja)
+    assert s.validate_strict("Dato [C1] y ruido [C999]", [any_citation], retrieved_chunk_count=2) is False
+
+
+def test_validate_strict_rejects_mixed_valid_and_invalid_below_coverage_threshold():
+    s = CitationService()
+    any_citation = Citation(
+        doc_id=uuid4(),
+        title="Doc",
+        chunk_id="c1",
+        snippet="x",
+        section=None,
+        page=None,
+        score=0.1,
+        metadata={},
+    )
+
+    # 1 válida sobre 3 tokens => 0.33 < 0.85
+    assert s.validate_strict("A [C1] B [C999] C [C999]", [any_citation], retrieved_chunk_count=2) is False

@@ -11,6 +11,10 @@ class ChatMode(str, Enum):
     strict = "strict"
 
 
+class RefusalReason(str, Enum):
+    insufficient_grounding_or_citations = "insufficient_grounding_or_citations"
+
+
 class ChatFilters(BaseModel):
     department: str | None = None
     doc_type: str | None = None
@@ -38,6 +42,10 @@ class ChatResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     confidence: ConfidenceLevel
     follow_ups: list[str] = Field(default_factory=list)
+
+    # Rechazos: contrato estable (retrocompatible)
+    refused: bool = False
+    refusal_reason: RefusalReason | None = None
 
     run_id: UUID
     usage: LLMUsage | None = None

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from uuid import UUID, uuid4
+from uuid import uuid4
 
-from packages.shared.schemas.chat import ChatMode, ChatRequest, ChatResponse
+from packages.shared.schemas.chat import ChatMode, ChatRequest, ChatResponse, RefusalReason
 from packages.shared.schemas.common import ConfidenceLevel, TenantContext
 
 from .citation_service import CitationService
@@ -15,6 +15,12 @@ from .run_logger import RunLogInput, RunLogger
 class ChatPolicy:
     min_evidence_strength_normal: float = 0.25
     min_evidence_strength_strict: float = 0.35
+
+    # Rechazo canónico (sin filtrar info sensible)
+    strict_refusal_text: str = (
+        "I don’t have enough evidence in the provided documents to answer that."
+    )
+    strict_refusal_reason: RefusalReason = RefusalReason.insufficient_grounding_or_citations
 
 
 class ChatService:
@@ -67,11 +73,23 @@ class ChatService:
                 "I don’t have enough evidence in the provided documents to answer that.\n"
                 "Try adding more documentation or narrowing the question."
                 if req.mode == ChatMode.strict
-                else
-                "I don’t have enough information in the available documents to answer confidently.\n"
+                else "I don’t have enough information in the available documents to answer confidently.\n"
                 "Can you clarify which policy/process or department this refers to?"
             )
             await self._messages_repo.insert(conversation_id, role="assistant", content=answer)
+
+            refusal_reason = (
+                self._policy.strict_refusal_reason if req.mode == ChatMode.strict else None
+            )
+
+            debug = (
+                {
+                    **(r.debug or {}),
+                    "strict_refusal_reason": refusal_reason.value,
+                }
+                if refusal_reason is not None
+                else r.debug
+            )
 
             run_id = await self._run_logger.persist(
                 RunLogInput(
@@ -83,7 +101,7 @@ class ChatService:
                     model="(no-llm)",
                     usage=None,
                     retrieved_doc_ids=[str(c.doc_id) for c in r.chunks],
-                    retrieval_debug=r.debug,
+                    retrieval_debug=debug,
                 )
             )
 
@@ -97,9 +115,11 @@ class ChatService:
                     "Which department/process is this about?",
                     "Can you share an example or a keyword from the document?",
                 ],
+                refused=req.mode == ChatMode.strict,
+                refusal_reason=refusal_reason,
                 run_id=run_id,
                 usage=None,
-                retrieval_debug=r.debug,
+                retrieval_debug=debug,
             )
 
         system = self._prompts.system_prompt(req.mode)
@@ -111,12 +131,21 @@ class ChatService:
 
         citations = self._citations.build_citations(r.chunks, llm_res.text)
 
-        if req.mode == ChatMode.strict and not self._citations.validate_strict(llm_res.text, citations):
+        if req.mode == ChatMode.strict and not self._citations.validate_strict(
+            llm_res.text,
+            citations,
+            retrieved_chunk_count=len(r.chunks),
+        ):
             answer = (
-                "I don’t have enough evidence in the provided documents to answer that.\n"
+                f"{self._policy.strict_refusal_text}\n"
                 "Please provide more documentation or rephrase the question."
             )
             await self._messages_repo.insert(conversation_id, role="assistant", content=answer)
+
+            debug = {
+                **(r.debug or {}),
+                "strict_refusal_reason": self._policy.strict_refusal_reason.value,
+            }
 
             run_id = await self._run_logger.persist(
                 RunLogInput(
@@ -128,7 +157,7 @@ class ChatService:
                     model=model,
                     usage=llm_res.usage,
                     retrieved_doc_ids=[str(c.doc_id) for c in r.chunks],
-                    retrieval_debug=r.debug,
+                    retrieval_debug=debug,
                 )
             )
 
@@ -141,9 +170,11 @@ class ChatService:
                     "Can you point me to the exact doc/section?",
                     "Do you have a PDF or link to ingest?",
                 ],
+                refused=True,
+                refusal_reason=self._policy.strict_refusal_reason,
                 run_id=run_id,
                 usage=llm_res.usage,
-                retrieval_debug=r.debug,
+                retrieval_debug=debug,
             )
 
         await self._messages_repo.insert(conversation_id, role="assistant", content=llm_res.text)
