@@ -28,12 +28,23 @@ def setup_app(app) -> None:
     setup_observability()
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    # Asegura que RLS se aplica incluso si el rol tuviera BYPASSRLS.
+    # (equivalente a: SET row_security = on)
+    await conn.execute("SET row_security = on")
+
+
 async def get_db_pool() -> asyncpg.Pool:
     # Singleton por proceso
     # Nota: en tests/CLI se puede sobreescribir con dependency overrides.
     if not hasattr(get_db_pool, "_pool"):
         dsn = os.getenv("DATABASE_URL", "postgresql://app:app@localhost:5432/businessassistant")
-        get_db_pool._pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=10)  # type: ignore[attr-defined]
+        get_db_pool._pool = await asyncpg.create_pool(  # type: ignore[attr-defined]
+            dsn=dsn,
+            min_size=1,
+            max_size=10,
+            init=_init_connection,
+        )
     return get_db_pool._pool  # type: ignore[attr-defined]
 
 
@@ -71,6 +82,44 @@ def _is_dev_mode() -> bool:
     return os.getenv("APP_ENV", os.getenv("ENV", "dev")).lower() in {"dev", "local"}
 
 
+class _PostgresRunsRepo:
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def insert_run(self, *, run_id, data) -> None:
+        # Persistencia mínima viable para fase 7 (eval/judge): estable y consultable.
+        sql = """
+        INSERT INTO runs (
+          tenant_id, run_id, user_id, conversation_id,
+          question, answer, model,
+          usage, retrieved_doc_ids, retrieval_debug
+        ) VALUES (
+          $1, $2::uuid, $3::uuid, $4::uuid,
+          $5, $6, $7,
+          $8::jsonb, $9::jsonb, $10::jsonb
+        )
+        """
+
+        usage = getattr(data, "usage", None)
+        usage_json = usage.model_dump() if usage is not None and hasattr(usage, "model_dump") else None
+
+        async with self._pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(data.tenant_id))
+            await conn.execute(
+                sql,
+                str(data.tenant_id),
+                str(run_id),
+                str(data.user_id),
+                str(data.conversation_id),
+                str(data.question),
+                str(data.answer),
+                str(data.model),
+                usage_json,
+                list(getattr(data, "retrieved_doc_ids", []) or []),
+                dict(getattr(data, "retrieval_debug", {}) or {}),
+            )
+
+
 async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatService:
     # Infra/adapters mínimos
     vector_store = PgvectorVectorStore(pool)
@@ -89,8 +138,7 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
 
     retrieval = RetrievalService(vector_store=vector_store, permissions=permissions, embeddings=embeddings)
 
-    # Repos mínimos (runs/conversations/messages): en V1 usamos repos in-memory si no hay DB tables.
-    runs_repo = _InMemoryRunsRepo()
+    runs_repo = _PostgresRunsRepo(pool)
     conversations_repo = _InMemoryConversationsRepo()
     messages_repo = _InMemoryMessagesRepo()
 
@@ -124,10 +172,17 @@ class _DummyEmbeddings:
 
 class _DummyLLM(LLMClient):
     async def _generate_impl(self, *, system: str, user: str, context: str, model: str) -> LLMResult:
+        import asyncio
+
+        # Simula latencia para que métricas/evals no tengan casos "0ms".
+        await asyncio.sleep(0.02)
+
         # Respuesta simple que siempre cita el primer chunk si existe.
-        # Útil para probar el flujo /chat sin proveedor.
         text = f"(dev) No tengo un LLM configurado. Pregunta: {user}\n\n[C1]"
-        return LLMResult(text=text, usage=None)
+
+        # Usage coherente (aunque sea dummy). La latencia real la añade LLMClient.generate().
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_estimate_usd": 0.0}
+        return LLMResult(text=text, usage=usage)
 
 
 class _InMemoryRunsRepo:
