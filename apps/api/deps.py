@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Sequence
+from typing import Sequence, cast
 from uuid import UUID
 
 import asyncpg
@@ -13,6 +13,7 @@ from apps.api.adapters.pgvector_vector_store import PgvectorVectorStore
 from apps.api.services.chat_service import ChatService
 from apps.api.services.citation_service import CitationService
 from apps.api.services.llm_client import LLMClient
+from apps.api.services.llm_client import LLMResult
 from apps.api.services.observability import setup_observability
 from apps.api.services.permissions import DefaultPermissionsService
 from apps.api.services.prompt_service import PromptService
@@ -66,15 +67,27 @@ async def get_ctx(
     )
 
 
+def _is_dev_mode() -> bool:
+    return os.getenv("APP_ENV", os.getenv("ENV", "dev")).lower() in {"dev", "local"}
+
+
 async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatService:
     # Infra/adapters mínimos
     vector_store = PgvectorVectorStore(pool)
     permissions = DefaultPermissionsService()
 
-    # Embeddings/LLM: placeholder (hasta integrar proveedor real)
-    llm = LLMClient()
+    # DEV: stubs para poder probar flujo HTTP sin proveedores externos.
+    if _is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
+        llm: LLMClient = _DummyLLM()
+    else:
+        llm = LLMClient()
 
-    retrieval = RetrievalService(vector_store=vector_store, permissions=permissions, embeddings=_DummyEmbeddings())
+    if _is_dev_mode() and os.getenv("DEV_DUMMY_EMBEDDINGS", "true").lower() in {"1", "true", "yes"}:
+        embeddings = cast(EmbeddingService, _DummyEmbeddings())
+    else:
+        embeddings = cast(EmbeddingService, _DummyEmbeddings())
+
+    retrieval = RetrievalService(vector_store=vector_store, permissions=permissions, embeddings=embeddings)
 
     # Repos mínimos (runs/conversations/messages): en V1 usamos repos in-memory si no hay DB tables.
     runs_repo = _InMemoryRunsRepo()
@@ -93,14 +106,28 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
 
 
 # === Placeholders simples para poder levantar API antes de tener capa repo completa ===
-class _DummyEmbeddings(EmbeddingService):
+class _DummyEmbeddings:
+    """Embeddings dummy (DEV).
+
+    Ojo: debe devolver dimensión 1536 para que el vector store no haga fail-fast.
+    """
+
     async def embed_query(self, *, text: str) -> list[float]:
-        # TODO: integrar provider de embeddings.
-        raise HTTPException(status_code=501, detail="Embeddings provider not configured")
+        # Vector determinista y barato (no semántico).
+        # Mantener 1536 floats.
+        base = float((abs(hash(text)) % 10_000) / 10_000)
+        return [base] * 1536
 
     async def embed_chunks(self, *, texts: Sequence[str]) -> list[Sequence[float]]:
-        # Firma exacta: `texts: Sequence[str]` en el protocolo.
-        raise HTTPException(status_code=501, detail="Embeddings provider not configured")
+        return [[float((abs(hash(t)) % 10_000) / 10_000)] * 1536 for t in texts]
+
+
+class _DummyLLM(LLMClient):
+    async def _generate_impl(self, *, system: str, user: str, context: str, model: str) -> LLMResult:
+        # Respuesta simple que siempre cita el primer chunk si existe.
+        # Útil para probar el flujo /chat sin proveedor.
+        text = f"(dev) No tengo un LLM configurado. Pregunta: {user}\n\n[C1]"
+        return LLMResult(text=text, usage=None)
 
 
 class _InMemoryRunsRepo:

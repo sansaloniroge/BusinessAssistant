@@ -75,7 +75,9 @@ async def main() -> int:
         )
 
         # embedding dummy 1536d (una sola vez)
-        emb = "[" + ",".join(["0" for _ in range(1536)]) + "]"
+        # IMPORTANTE: no usar el vector cero (norma 0) porque en cosine distance puede producir NaN.
+        # Usamos un patrón determinista y finito.
+        emb = "[" + ",".join(["0.01" for _ in range(1536)]) + "]"
 
         await conn.execute(
             """
