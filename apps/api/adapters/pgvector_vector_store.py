@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, Sequence
+import json
+import math
 import asyncpg
 
 from apps.api.services.ports import VectorStore
@@ -58,17 +60,44 @@ class PgvectorVectorStore(VectorStore):
 
         out: list[RetrievedChunk] = []
         for r in rows:
+            raw_score = r["score"]
+            try:
+                score = float(raw_score)
+            except Exception:
+                score = -1.0
+            if not math.isfinite(score):
+                score = -1.0
+
             out.append(
                 RetrievedChunk(
                     chunk_id=r["chunk_id"],
                     doc_id=r["doc_id"],
                     title=r["title"],
                     content=r["content"],
-                    score=float(r["score"]),
-                    metadata=dict(r["metadata"]) if r["metadata"] is not None else {},
+                    score=score,
+                    metadata=self._coerce_metadata(r["metadata"]),
                 )
             )
         return out
+
+    @staticmethod
+    def _coerce_metadata(v: Any) -> dict[str, Any]:
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            return v
+        # asyncpg puede devolver JSONB como str (JSON)
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, dict) else {"value": parsed}
+            except Exception:
+                return {"value": v}
+        # asyncpg.Record / secuencias de pares
+        try:
+            return dict(v)
+        except Exception:
+            return {"value": v}
 
     async def upsert_chunks(self, *, tenant_id: str, chunks: Sequence[dict[str, Any]]) -> int:
         if not chunks:
