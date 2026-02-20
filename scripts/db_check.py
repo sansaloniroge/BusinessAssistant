@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import NoReturn
 from uuid import uuid4
 
 import asyncpg
@@ -22,7 +23,7 @@ def _load_dotenv(path: str = ".env") -> None:
         os.environ.setdefault(k, v)
 
 
-async def main() -> int:
+async def main() -> NoReturn:
     _load_dotenv()
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
@@ -52,7 +53,7 @@ async def main() -> int:
         table_names = [r["tablename"] for r in tables]
         print("tablas:", ", ".join(table_names))
 
-        for required in ("documents", "document_chunks"):
+        for required in ("documents", "document_chunks", "runs"):
             if required not in table_names:
                 raise SystemExit(f"Falta tabla requerida: {required}")
 
@@ -60,7 +61,7 @@ async def main() -> int:
         tenant_id = "tenant_test"
         await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
 
-        # 4) insert mínimo + select
+        # 4) insert mínimo + select (documentos + chunks)
         doc_id = uuid4()
         chunk_id = "c1"
 
@@ -75,7 +76,9 @@ async def main() -> int:
         )
 
         # embedding dummy 1536d (una sola vez)
-        emb = "[" + ",".join(["0" for _ in range(1536)]) + "]"
+        # IMPORTANTE: no usar el vector cero (norma 0) porque en cosine distance puede producir NaN.
+        # Usamos un patrón determinista y finito.
+        emb = "[" + ",".join(["0.01" for _ in range(1536)]) + "]"
 
         await conn.execute(
             """
@@ -98,9 +101,37 @@ async def main() -> int:
             emb,
         )
 
+        # 5) runs: insertar un run mínimo (para fase 7)
+        run_id = uuid4()
+        conversation_id = uuid4()
+        user_id = uuid4()
+
+        await conn.execute(
+            """
+            INSERT INTO runs (
+              tenant_id, run_id, user_id, conversation_id,
+              question, answer, model,
+              usage, retrieved_doc_ids, retrieval_debug
+            ) VALUES (
+              $1, $2::uuid, $3::uuid, $4::uuid,
+              'Q', 'A', 'test-model',
+              '{"total_tokens":0,"prompt_tokens":0,"completion_tokens":0,"cost_estimate_usd":0.0,"latency_ms":1}'::jsonb,
+              $5::jsonb,
+              '{"evidence_strength": 0.0}'::jsonb
+            )
+            ON CONFLICT (tenant_id, run_id) DO NOTHING
+            """,
+            tenant_id,
+            str(run_id),
+            str(user_id),
+            str(conversation_id),
+            [str(doc_id)],
+        )
+
         n_docs = await conn.fetchval("SELECT count(*) FROM documents")
         n_chunks = await conn.fetchval("SELECT count(*) FROM document_chunks")
-        print(f"count(documents)={n_docs} count(document_chunks)={n_chunks}")
+        n_runs = await conn.fetchval("SELECT count(*) FROM runs")
+        print(f"count(documents)={n_docs} count(document_chunks)={n_chunks} count(runs)={n_runs}")
 
         # Validar RLS: sin WHERE, debe ver solo el tenant de la sesión
         rows_default = await conn.fetch("SELECT tenant_id, chunk_id FROM document_chunks")
@@ -110,18 +141,31 @@ async def main() -> int:
         if any(r["tenant_id"] != tenant_id for r in rows_default):
             raise SystemExit("RLS falló: se devolvieron filas de otro tenant")
 
+        rows_runs = await conn.fetch("SELECT tenant_id, run_id FROM runs")
+        print(f"select runs (tenant={tenant_id}, sin WHERE): {len(rows_runs)} fila(s)")
+        if not rows_runs:
+            raise SystemExit("RLS/insert falló: no se recuperaron runs para el tenant")
+        if any(r["tenant_id"] != tenant_id for r in rows_runs):
+            raise SystemExit("RLS falló: runs de otro tenant")
+
         # Validar aislamiento: cambiando tenant, no debe ver las filas anteriores
         await conn.execute("SELECT set_config('app.tenant_id', $1, true)", "other_tenant")
+
         rows_other = await conn.fetch("SELECT tenant_id, chunk_id FROM document_chunks")
         print(f"select chunks (tenant=other_tenant, sin WHERE): {len(rows_other)} fila(s)")
         if rows_other:
-            raise SystemExit("RLS parece no estar activo: se devolvieron filas para otro tenant")
+            raise SystemExit("RLS parece no estar activo: se devolvieron filas para otro tenant (chunks)")
+
+        rows_other_runs = await conn.fetch("SELECT tenant_id, run_id FROM runs")
+        print(f"select runs (tenant=other_tenant, sin WHERE): {len(rows_other_runs)} fila(s)")
+        if rows_other_runs:
+            raise SystemExit("RLS parece no estar activo: se devolvieron filas para otro tenant (runs)")
 
         print("OK")
-        return 0
+        raise SystemExit(0)
     finally:
         await conn.close()
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    asyncio.run(main())

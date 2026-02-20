@@ -45,7 +45,7 @@ class _Citations:
     def build_citations(self, chunks, answer):
         return list(self._citations)
 
-    def validate_strict(self, answer, citations):
+    def validate_strict(self, answer, citations, *, retrieved_chunk_count=None):
         return self._strict_ok
 
 
