@@ -55,8 +55,8 @@ CREATE TABLE IF NOT EXISTS eval_results (
   tenant_id        TEXT        NOT NULL,
   eval_result_id   UUID        NOT NULL,
 
-  eval_run_id      UUID        NOT NULL,
-  eval_case_id     UUID        NOT NULL,
+  eval_run_id      UUID        NULL,
+  eval_case_id     UUID        NULL,
   run_id           UUID        NOT NULL,
 
   overall          INT         NOT NULL CHECK (overall BETWEEN 0 AND 5),
@@ -86,4 +86,3 @@ DROP POLICY IF EXISTS eval_results_tenant_isolation ON eval_results;
 CREATE POLICY eval_results_tenant_isolation
   ON eval_results
   USING (tenant_id = current_setting('app.tenant_id', true));
-
