@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from apps.api.deps import setup_app
-from apps.api.routers import health, chat
+from apps.api.routers import health, chat, eval
 
 
 def _is_dev_mode() -> bool:
@@ -30,5 +30,6 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(eval.router)
 
     return app

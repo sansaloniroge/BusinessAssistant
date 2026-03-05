@@ -12,6 +12,8 @@ from packages.shared.schemas.common import TenantContext
 from apps.api.adapters.pgvector_vector_store import PgvectorVectorStore
 from apps.api.services.chat_service import ChatService
 from apps.api.services.citation_service import CitationService
+from apps.api.services.eval_judge_service import EvalJudgeService
+from apps.api.services.eval_service import EvalService
 from apps.api.services.llm_client import LLMClient
 from apps.api.services.llm_client import LLMResult
 from apps.api.services.observability import setup_observability
@@ -119,6 +121,71 @@ class _PostgresRunsRepo:
                 dict(getattr(data, "retrieval_debug", {}) or {}),
             )
 
+    async def get_run(self, *, tenant_id: str, run_id: UUID) -> dict | None:
+        sql = """
+        SELECT tenant_id, run_id, user_id, conversation_id,
+               question, answer, model,
+               usage, retrieved_doc_ids, retrieval_debug, created_at
+        FROM runs
+        WHERE tenant_id = $1 AND run_id = $2::uuid
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            row = await conn.fetchrow(sql, str(tenant_id), str(run_id))
+        return dict(row) if row is not None else None
+
+
+class _PostgresEvalRepo:
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def insert_eval_result(
+        self,
+        *,
+        tenant_id: str,
+        eval_result_id: UUID,
+        eval_run_id: UUID | None,
+        eval_case_id: UUID | None,
+        run_id: UUID,
+        judge_model: str,
+        judge_usage: dict | None,
+        output,
+    ) -> None:
+        sql = """
+        INSERT INTO eval_results (
+          tenant_id, eval_result_id,
+          eval_run_id, eval_case_id, run_id,
+          overall, faithfulness, relevance, citation_quality, refusal_correctness,
+          rationale,
+          judge_model, judge_usage
+        ) VALUES (
+          $1, $2::uuid,
+          $3::uuid, $4::uuid, $5::uuid,
+          $6, $7, $8, $9, $10,
+          $11,
+          $12, $13::jsonb
+        )
+        """
+
+        async with self._pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            await conn.execute(
+                sql,
+                str(tenant_id),
+                str(eval_result_id),
+                str(eval_run_id) if eval_run_id is not None else None,
+                str(eval_case_id) if eval_case_id is not None else None,
+                str(run_id),
+                int(output.overall),
+                int(output.faithfulness),
+                int(output.relevance),
+                int(output.citation_quality),
+                int(output.refusal_correctness),
+                str(output.rationale),
+                str(judge_model),
+                judge_usage,
+            )
+
 
 async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatService:
     # Infra/adapters mínimos
@@ -151,6 +218,19 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
         conversations_repo=conversations_repo,
         messages_repo=messages_repo,
     )
+
+
+async def get_eval_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> EvalService:
+    # Reutiliza el mismo LLM (en esta fase: dummy en DEV) para que el judge funcione sin proveedor.
+    if _is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
+        llm: LLMClient = _DummyLLM()
+    else:
+        llm = LLMClient()
+
+    judge = EvalJudgeService(llm=llm)
+    runs_repo = _PostgresRunsRepo(pool)
+    eval_repo = _PostgresEvalRepo(pool)
+    return EvalService(runs_repo=runs_repo, eval_repo=eval_repo, judge=judge)
 
 
 # === Placeholders simples para poder levantar API antes de tener capa repo completa ===

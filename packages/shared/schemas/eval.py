@@ -31,6 +31,7 @@ class EvalCaseResult(BaseModel):
     faithfulness: int = Field(ge=0, le=5)
     relevance: int = Field(ge=0, le=5)
     citation_quality: int = Field(ge=0, le=5)
+    refusal_correctness: int = Field(ge=0, le=5)
     rationale: str
 
 
@@ -42,3 +43,25 @@ class EvalRunResult(BaseModel):
     model: str
     created_at: datetime
     results: list[EvalCaseResult]
+
+
+class JudgeInput(BaseModel):
+    """Entrada del judge conectada a un run persistido."""
+
+    tenant_id: str
+    run_id: UUID
+    question: str
+    answer: str
+    citations: list[dict] = Field(default_factory=list)
+    retrieved_doc_ids: list[str] = Field(default_factory=list)
+    retrieval_debug: dict = Field(default_factory=dict)
+    mode: str = "strict"
+
+
+class JudgeOutput(BaseModel):
+    overall: int = Field(ge=0, le=5)
+    faithfulness: int = Field(ge=0, le=5)
+    relevance: int = Field(ge=0, le=5)
+    citation_quality: int = Field(ge=0, le=5)
+    refusal_correctness: int = Field(ge=0, le=5)
+    rationale: str
