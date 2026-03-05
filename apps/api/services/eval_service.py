@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID, uuid4
 
 from packages.shared.schemas.common import TenantContext
@@ -36,7 +35,7 @@ class EvalService:
         self._default_mode = default_mode
 
     @staticmethod
-    def _maybe_uuid(v: Any) -> UUID | None:
+    def _maybe_uuid(v) -> UUID | None:
         if v is None:
             return None
         if isinstance(v, UUID):
@@ -60,7 +59,6 @@ class EvalService:
 
         retrieval_debug = dict(run.get("retrieval_debug") or {})
 
-        # Si no vienen explícitos, intentar inferir desde debug (si el runner los inyecta en el request y se loguean).
         inferred_eval_run_id = self._maybe_uuid(retrieval_debug.get("eval_run_id"))
         inferred_eval_case_id = self._maybe_uuid(retrieval_debug.get("eval_case_id"))
 
@@ -78,7 +76,7 @@ class EvalService:
             mode=str(retrieval_debug.get("mode") or self._default_mode),
         )
 
-        out, usage = await self._judge.judge(inp=inp)
+        out, usage, judge_model = await self._judge.judge(inp=inp)
 
         usage_json = (
             usage.model_dump() if usage is not None and hasattr(usage, "model_dump") else (usage if isinstance(usage, dict) else None)
@@ -90,7 +88,7 @@ class EvalService:
             eval_run_id=eval_run_id_eff,
             eval_case_id=eval_case_id_eff,
             run_id=run_id,
-            judge_model=getattr(usage, "model", None) or "(unknown)",
+            judge_model=str(judge_model),
             judge_usage=usage_json,
             output=out,
         )

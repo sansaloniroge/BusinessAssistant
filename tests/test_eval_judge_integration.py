@@ -1,5 +1,5 @@
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -62,6 +62,8 @@ class _EvalRepo:
 @pytest.mark.asyncio
 async def test_eval_service_judges_real_run_and_persists_result(tenant_ctx):
     run_id = uuid4()
+    eval_run_id = uuid4()
+    eval_case_id = uuid4()
 
     run_row = {
         "tenant_id": str(tenant_ctx.tenant_id),
@@ -82,6 +84,7 @@ async def test_eval_service_judges_real_run_and_persists_result(tenant_ctx):
     }
 
     llm = _FixedJSONLLM(expected)
+    # Fuerza un modelo por defecto específico para poder asertar persistencia.
     judge = EvalJudgeService(llm=llm)
 
     runs_repo = _RunsRepo(run_row)
@@ -89,7 +92,7 @@ async def test_eval_service_judges_real_run_and_persists_result(tenant_ctx):
 
     svc = EvalService(runs_repo=runs_repo, eval_repo=eval_repo, judge=judge)
 
-    out = await svc.judge_existing_run(ctx=tenant_ctx, run_id=run_id)
+    out = await svc.judge_existing_run(ctx=tenant_ctx, run_id=run_id, eval_run_id=eval_run_id, eval_case_id=eval_case_id)
 
     assert isinstance(out, JudgeOutput)
     assert out.overall == 4
@@ -101,6 +104,9 @@ async def test_eval_service_judges_real_run_and_persists_result(tenant_ctx):
     inserted = eval_repo.inserted[0]
     assert inserted["tenant_id"] == str(tenant_ctx.tenant_id)
     assert inserted["run_id"] == run_id
+    assert inserted["eval_run_id"] == eval_run_id
+    assert inserted["eval_case_id"] == eval_case_id
+    assert inserted["judge_model"] == "gpt-4.1-mini"
     assert isinstance(inserted["output"], JudgeOutput)
 
 
@@ -124,4 +130,3 @@ async def test_eval_service_returns_404_like_when_run_missing(tenant_ctx):
 
     with pytest.raises(KeyError):
         await svc.judge_existing_run(ctx=tenant_ctx, run_id=run_id)
-

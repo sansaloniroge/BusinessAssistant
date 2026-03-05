@@ -47,7 +47,14 @@ class EvalJudgeService:
         payload = inp.model_dump(mode="json")
         return json.dumps(payload, ensure_ascii=False)
 
-    async def judge(self, *, inp: JudgeInput, model: str | None = None) -> tuple[JudgeOutput, Any]:
+    async def judge(
+        self,
+        *,
+        inp: JudgeInput,
+        model: str | None = None,
+    ) -> tuple[JudgeOutput, Any, str]:
+        """Evalúa un run y devuelve (output, usage, judge_model_efectivo)."""
+
         judge_model = model or self._policy.default_judge_model
         res = await self._llm.generate(
             system=self._system_prompt(),
@@ -69,7 +76,7 @@ class EvalJudgeService:
                 refusal_correctness=0,
                 rationale=f"Invalid judge output (non-JSON): {raw[:1000]}",
             )
-            return out, res.usage
+            return out, res.usage, judge_model
 
         def clamp_int(v: Any) -> int:
             try:
@@ -86,4 +93,4 @@ class EvalJudgeService:
             refusal_correctness=clamp_int(data.get("refusal_correctness")),
             rationale=str(data.get("rationale") or ""),
         )
-        return out, res.usage
+        return out, res.usage, judge_model
