@@ -32,6 +32,19 @@ def _rls_test_role() -> str:
     return os.getenv("RLS_TEST_ROLE", "rls_test")
 
 
+def _assume_rls_role_or_skip(conn) -> str:
+    role = _rls_test_role()
+    role_exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname=:r"), {"r": role}).scalar()
+    if role_exists is None:
+        pytest.skip(f"RLS_TEST_ROLE '{role}' no existe. Crea el rol o define RLS_TEST_ROLE.")
+
+    # Cambia a un rol sin BYPASSRLS para que RLS sea efectivo.
+    # (SET LOCAL para no contaminar conexiones del pool)
+    conn.execute(text(f"SET LOCAL ROLE {role}"))
+    conn.execute(text("SET LOCAL row_security = on"))
+    return role
+
+
 @pytest.mark.integration
 def test_alembic_upgrade_head_smoke():
     # Smoke: debe aplicar sin excepciones y dejar alembic_version.
@@ -81,17 +94,8 @@ def test_rls_tenant_isolation_runs():
     user_id = str(uuid4())
     conv_id = str(uuid4())
 
-    role = _rls_test_role()
-
     with engine.begin() as conn:
-        # Asegura rol de test existe y es usable.
-        role_exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname=:r"), {"r": role}).scalar()
-        if role_exists is None:
-            pytest.skip(f"RLS_TEST_ROLE '{role}' no existe. Crea el rol o define RLS_TEST_ROLE.")
-
-        # Cambia a un rol sin BYPASSRLS para que RLS sea efectivo.
-        conn.execute(text(f"SET LOCAL ROLE {role}"))
-        conn.execute(text("SET LOCAL row_security = on"))
+        _assume_rls_role_or_skip(conn)
 
         # A: insert
         conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_a})
@@ -118,4 +122,67 @@ def test_rls_tenant_isolation_runs():
         conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_b})
         got_b = conn.execute(text("SELECT COUNT(*) FROM runs WHERE run_id = CAST(:rid AS uuid)"), {"rid": run_id}).scalar_one()
         assert int(got_b) == 0
+
+
+@pytest.mark.integration
+def test_rls_tenant_isolation_conversations_and_messages():
+    engine = create_engine(_db_url())
+
+    tenant_a = str(uuid4())
+    tenant_b = str(uuid4())
+    conversation_id = str(uuid4())
+    created_by = str(uuid4())
+
+    with engine.begin() as conn:
+        _assume_rls_role_or_skip(conn)
+
+        # Insert under tenant A
+        conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_a})
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO conversations (tenant_id, conversation_id, created_by)
+                VALUES (:tenant_id, CAST(:cid AS uuid), CAST(:uid AS uuid))
+                """
+            ),
+            {"tenant_id": tenant_a, "cid": conversation_id, "uid": created_by},
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO messages (tenant_id, message_id, conversation_id, role, content)
+                VALUES (:tenant_id, gen_random_uuid(), CAST(:cid AS uuid), 'user', 'hello')
+                """
+            ),
+            {"tenant_id": tenant_a, "cid": conversation_id},
+        )
+
+        c_a = conn.execute(
+            text("SELECT COUNT(*) FROM conversations WHERE conversation_id = CAST(:cid AS uuid)"),
+            {"cid": conversation_id},
+        ).scalar_one()
+        m_a = conn.execute(
+            text("SELECT COUNT(*) FROM messages WHERE conversation_id = CAST(:cid AS uuid)"),
+            {"cid": conversation_id},
+        ).scalar_one()
+
+        assert int(c_a) == 1
+        assert int(m_a) == 1
+
+        # Switch to tenant B: must not see the conversation nor the message
+        conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_b})
+
+        c_b = conn.execute(
+            text("SELECT COUNT(*) FROM conversations WHERE conversation_id = CAST(:cid AS uuid)"),
+            {"cid": conversation_id},
+        ).scalar_one()
+        m_b = conn.execute(
+            text("SELECT COUNT(*) FROM messages WHERE conversation_id = CAST(:cid AS uuid)"),
+            {"cid": conversation_id},
+        ).scalar_one()
+
+        assert int(c_b) == 0
+        assert int(m_b) == 0
 

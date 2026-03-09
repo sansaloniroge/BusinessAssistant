@@ -3,9 +3,13 @@ services:
     image: pgvector/pgvector:pg16
     container_name: businessassistant-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      # Importante: el user 'app' no debe ser superuser en prod/ci.
+      # Usamos el usuario default 'postgres' para bootstrap y creamos el rol app via init script.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-businessassistant}
+      APP_DB_USER: ${APP_DB_USER:-app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-app}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -31,4 +35,3 @@ services:
 
 volumes:
   pgdata:
-
