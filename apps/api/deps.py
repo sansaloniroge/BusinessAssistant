@@ -5,11 +5,12 @@ from typing import Sequence, cast
 from uuid import UUID
 
 import asyncpg
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 
 from packages.shared.schemas.common import TenantContext
 
 from apps.api.adapters.pgvector_vector_store import PgvectorVectorStore
+from apps.api.security import decode_jwt, is_dev_mode, require_role, require_scope, tenant_context_from_claims
 from apps.api.services.chat_service import ChatService
 from apps.api.services.citation_service import CitationService
 from apps.api.services.eval_judge_service import EvalJudgeService
@@ -51,37 +52,76 @@ async def get_db_pool() -> asyncpg.Pool:
 
 
 async def get_ctx(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    # DEV-only escape hatch (compat): headers antiguos
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
     x_role: str | None = Header(default="user", alias="X-Role"),
     x_scopes: str | None = Header(default="", alias="X-Scopes"),
 ) -> TenantContext:
-    """Resolver provisional de TenantContext.
+    """Resolver de TenantContext.
 
-    Hasta implementar AuthN/Z (paso 8), aceptamos contexto por headers.
+    - PROD: JWT firmado (Bearer) obligatorio. Ignora X-Tenant-Id.
+    - DEV: permite fallback a headers para facilitar pruebas locales.
     """
-    if not x_tenant_id:
-        raise HTTPException(status_code=400, detail="Missing X-Tenant-Id")
-    if not x_user_id:
-        raise HTTPException(status_code=400, detail="Missing X-User-Id")
+    # 1) JWT
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        try:
+            claims = decode_jwt(token)
+            ctx = tenant_context_from_claims(claims)
+            request.state.ctx = ctx
+            return ctx
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-    try:
-        user_id = UUID(x_user_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid X-User-Id (must be UUID)")
+    # 2) Fallback DEV: headers
+    if is_dev_mode():
+        if not x_tenant_id:
+            raise HTTPException(status_code=400, detail="Missing X-Tenant-Id")
+        if not x_user_id:
+            raise HTTPException(status_code=400, detail="Missing X-User-Id")
 
-    scopes = [s.strip() for s in (x_scopes or "").split(",") if s.strip()]
+        try:
+            user_id = UUID(x_user_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid X-User-Id (must be UUID)")
 
-    return TenantContext(
-        tenant_id=str(x_tenant_id),
-        user_id=user_id,
-        role=str(x_role or "user"),
-        scopes=scopes,
-    )
+        scopes = [s.strip() for s in (x_scopes or "").split(",") if s.strip()]
+        ctx = TenantContext(
+            tenant_id=str(x_tenant_id),
+            user_id=user_id,
+            role=str(x_role or "user"),
+            scopes=scopes,
+        )
+        request.state.ctx = ctx
+        return ctx
+
+    raise HTTPException(status_code=401, detail="Missing Authorization")
 
 
-def _is_dev_mode() -> bool:
-    return os.getenv("APP_ENV", os.getenv("ENV", "dev")).lower() in {"dev", "local"}
+def require_scopes(*scopes: str):
+    async def _dep(ctx: TenantContext = Depends(get_ctx)) -> TenantContext:
+        try:
+            for s in scopes:
+                require_scope(ctx, s)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        return ctx
+
+    return _dep
+
+
+def require_min_role(role: str):
+    async def _dep(ctx: TenantContext = Depends(get_ctx)) -> TenantContext:
+        try:
+            require_role(ctx, role)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        return ctx
+
+    return _dep
 
 
 class _PostgresRunsRepo:
@@ -187,18 +227,53 @@ class _PostgresEvalRepo:
             )
 
 
+class _PostgresConversationsRepo:
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def create(self, conversation_id, ctx: TenantContext) -> None:
+        sql = """
+        INSERT INTO conversations (tenant_id, conversation_id, created_by)
+        VALUES ($1, $2::uuid, $3::uuid)
+        ON CONFLICT (tenant_id, conversation_id) DO NOTHING
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx.tenant_id))
+            await conn.execute(sql, str(ctx.tenant_id), str(conversation_id), str(ctx.user_id))
+
+
+class _PostgresMessagesRepo:
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def insert(self, conversation_id, *, role: str, content: str) -> None:
+        sql = """
+        INSERT INTO messages (tenant_id, message_id, conversation_id, role, content)
+        VALUES (
+          current_setting('app.tenant_id', true),
+          gen_random_uuid(),
+          $1::uuid,
+          $2,
+          $3
+        )
+        """
+        async with self._pool.acquire() as conn:
+            # tenant_id debe estar seteado por request
+            await conn.execute(sql, str(conversation_id), str(role), str(content))
+
+
 async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatService:
     # Infra/adapters mínimos
     vector_store = PgvectorVectorStore(pool)
     permissions = DefaultPermissionsService()
 
     # DEV: stubs para poder probar flujo HTTP sin proveedores externos.
-    if _is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
+    if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
         llm = LLMClient()
 
-    if _is_dev_mode() and os.getenv("DEV_DUMMY_EMBEDDINGS", "true").lower() in {"1", "true", "yes"}:
+    if is_dev_mode() and os.getenv("DEV_DUMMY_EMBEDDINGS", "true").lower() in {"1", "true", "yes"}:
         embeddings = cast(EmbeddingService, _DummyEmbeddings())
     else:
         embeddings = cast(EmbeddingService, _DummyEmbeddings())
@@ -206,8 +281,8 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
     retrieval = RetrievalService(vector_store=vector_store, permissions=permissions, embeddings=embeddings)
 
     runs_repo = _PostgresRunsRepo(pool)
-    conversations_repo = _InMemoryConversationsRepo()
-    messages_repo = _InMemoryMessagesRepo()
+    conversations_repo = _PostgresConversationsRepo(pool)
+    messages_repo = _PostgresMessagesRepo(pool)
 
     return ChatService(
         retrieval=retrieval,
@@ -222,7 +297,7 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
 
 async def get_eval_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> EvalService:
     # Reutiliza el mismo LLM (en esta fase: dummy en DEV) para que el judge funcione sin proveedor.
-    if _is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
+    if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
         llm = LLMClient()
@@ -259,31 +334,4 @@ class _DummyLLM(LLMClient):
 
         # Respuesta simple que siempre cita el primer chunk si existe.
         text = f"(dev) No tengo un LLM configurado. Pregunta: {user}\n\n[C1]"
-
-        # Usage coherente (aunque sea dummy). La latencia real la añade LLMClient.generate().
-        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost_estimate_usd": 0.0}
-        return LLMResult(text=text, usage=usage)
-
-
-class _InMemoryRunsRepo:
-    def __init__(self) -> None:
-        self._items = []
-
-    async def insert_run(self, *, run_id, data):
-        self._items.append((run_id, data))
-
-
-class _InMemoryConversationsRepo:
-    def __init__(self) -> None:
-        self._items = set()
-
-    async def create(self, conversation_id, ctx):
-        self._items.add((conversation_id, str(ctx.tenant_id)))
-
-
-class _InMemoryMessagesRepo:
-    def __init__(self) -> None:
-        self._items = []
-
-    async def insert(self, conversation_id, role, content):
-        self._items.append((conversation_id, role, content))
+        return LLMResult(text=text, usage=None)
