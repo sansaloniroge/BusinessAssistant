@@ -5,7 +5,6 @@ import jwt
 import pytest
 from starlette.requests import Request
 
-from apps.api.app import create_app
 from apps.api.deps import get_ctx
 
 

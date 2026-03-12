@@ -1,5 +1,5 @@
 import json
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -119,14 +119,20 @@ async def test_eval_service_returns_404_like_when_run_missing(tenant_ctx):
             "overall": 0,
             "faithfulness": 0,
             "relevance": 0,
+
             "citation_quality": 0,
-            "refusal_correctness": 0,
-            "rationale": "n/a",
+            "refusal_correctness": 5,
+            "rationale": "missing",
         }
     )
     judge = EvalJudgeService(llm=llm)
 
-    svc = EvalService(runs_repo=_RunsRepo(None), eval_repo=_EvalRepo(), judge=judge)
+    runs_repo = _RunsRepo(run_row=None)
+    eval_repo = _EvalRepo()
 
-    with pytest.raises(KeyError):
-        await svc.judge_existing_run(ctx=tenant_ctx, run_id=run_id)
+    svc = EvalService(runs_repo=runs_repo, eval_repo=eval_repo, judge=judge)
+
+    with pytest.raises(Exception) as e:
+        await svc.judge_existing_run(ctx=tenant_ctx, run_id=run_id, eval_run_id=uuid4(), eval_case_id=uuid4())
+
+    assert "not found" in str(e.value).lower()

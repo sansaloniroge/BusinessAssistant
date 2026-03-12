@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from packages.shared.schemas.common import TenantContext
-from packages.shared.schemas.filters import FieldFilter, MetaFilters
+from packages.shared.schemas.filters import MetaFilters
 
 from .ports import PermissionsService
 
@@ -21,8 +21,7 @@ class DefaultPermissionsService(PermissionsService):
         # Ejemplo de futuro: meta["allowed_groups"] = FieldFilter(op="$contains_any", value=ctx.scopes)
         return {}
 
-    async def can_access_doc(self, *, ctx: TenantContext, doc_id: UUID) -> bool:
+    async def can_access_doc(self, *, ctx: TenantContext, doc_id: "UUID") -> bool:
         # En este repo no existe aún una tabla de ACL/docs para validar.
         # El enforcement principal ahora mismo es a nivel vector store con tenant_id.
         return True
-
