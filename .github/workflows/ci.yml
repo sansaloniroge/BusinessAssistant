@@ -69,7 +69,7 @@ jobs:
           --health-retries 20
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/businessassistant
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/businessassistant
       APP_ENV: ci
       JWT_SECRET: ci-secret
       READINESS_TENANT_ID: 00000000-0000-0000-0000-000000000000

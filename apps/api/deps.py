@@ -37,11 +37,26 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
     await conn.execute("SET row_security = on")
 
 
+def _asyncpg_dsn_from_env(dsn: str) -> str:
+    """Convierte URLs estilo SQLAlchemy a un DSN válido para asyncpg.
+
+    En CI usamos `postgresql+psycopg://...` para forzar psycopg v3 en SQLAlchemy/Alembic,
+    pero asyncpg solo acepta `postgresql://` o `postgres://`.
+    """
+    dsn = (dsn or "").strip()
+    if dsn.startswith("postgresql+psycopg://"):
+        return "postgresql://" + dsn[len("postgresql+psycopg://") :]
+    if dsn.startswith("postgres+psycopg://"):
+        return "postgres://" + dsn[len("postgres+psycopg://") :]
+    return dsn
+
+
 async def get_db_pool() -> asyncpg.Pool:
     # Singleton por proceso
     # Nota: en tests/CLI se puede sobreescribir con dependency overrides.
     if not hasattr(get_db_pool, "_pool"):
-        dsn = os.getenv("DATABASE_URL", "postgresql://app:app@localhost:5432/businessassistant")
+        raw_dsn = os.getenv("DATABASE_URL", "postgresql://app:app@localhost:5432/businessassistant")
+        dsn = _asyncpg_dsn_from_env(raw_dsn)
         get_db_pool._pool = await asyncpg.create_pool(  # type: ignore[attr-defined]
             dsn=dsn,
             min_size=1,

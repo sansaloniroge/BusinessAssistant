@@ -55,7 +55,8 @@ class EvalService:
     ) -> JudgeOutput:
         run = await self._runs_repo.get_run(tenant_id=str(ctx.tenant_id), run_id=run_id)
         if run is None:
-            raise KeyError("run_not_found")
+            # "404-like": el test espera que el texto del error contenga "not found".
+            raise KeyError("run not found")
 
         retrieval_debug = dict(run.get("retrieval_debug") or {})
 

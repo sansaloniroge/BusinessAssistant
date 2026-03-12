@@ -39,7 +39,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     environment:
-      DATABASE_URL: postgresql://app:app@postgres:5432/businessassistant
+      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/businessassistant
       RUN_MIGRATIONS_ON_START: "1"
     depends_on:
       postgres:
@@ -53,7 +53,7 @@ services:
       dockerfile: Dockerfile.api
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: postgresql://app:app@postgres:5432/businessassistant
+      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/businessassistant
       JWT_SECRET: ${JWT_SECRET:-dev-secret}
       RUN_MIGRATIONS_ON_START: "0"
       READINESS_TENANT_ID: ${READINESS_TENANT_ID:-00000000-0000-0000-0000-000000000000}
@@ -77,7 +77,7 @@ services:
       dockerfile: Dockerfile.worker
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: postgresql://app:app@postgres:5432/businessassistant
+      DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/businessassistant
       RUN_MIGRATIONS_ON_START: "0"
     depends_on:
       postgres:
