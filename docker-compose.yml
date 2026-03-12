@@ -33,5 +33,57 @@ services:
       postgres:
         condition: service_healthy
 
+  migrate:
+    image: businessassistant-api:local
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      DATABASE_URL: postgresql://app:app@postgres:5432/businessassistant
+      RUN_MIGRATIONS_ON_START: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["true"]
+
+  api:
+    image: businessassistant-api:local
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: postgresql://app:app@postgres:5432/businessassistant
+      JWT_SECRET: ${JWT_SECRET:-dev-secret}
+      RUN_MIGRATIONS_ON_START: "0"
+      READINESS_TENANT_ID: ${READINESS_TENANT_ID:-00000000-0000-0000-0000-000000000000}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/readyz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    image: businessassistant-worker:local
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: postgresql://app:app@postgres:5432/businessassistant
+      RUN_MIGRATIONS_ON_START: "0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:

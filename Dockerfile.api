@@ -1,0 +1,28 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Dependencias del sistema (psycopg/asyncpg suelen ir por wheel, pero dejamos libpq para compat)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates libpq5 \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY . /app
+
+# healthcheck del contenedor (puede sobreescribirse en orchestrator)
+HEALTHCHECK --interval=10s --timeout=3s --retries=10 CMD curl -fsS http://127.0.0.1:8000/readyz || exit 1
+
+EXPOSE 8000
+
+# Opción: migraciones en arranque (habilitar solo en DEV/CI)
+ENV RUN_MIGRATIONS_ON_START=0
+
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
+CMD ["python", "-m", "apps.api.main"]
+

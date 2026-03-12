@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates libpq5 \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY . /app
+
+ENV RUN_MIGRATIONS_ON_START=0
+
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
+
+# Ajusta este CMD al entrypoint real de tu worker cuando exista.
+# Por ahora ejecuta el pipeline service en modo 'idle' si no hay cola.
+CMD ["python", "-m", "apps.api.services.ingestion_service"]
+

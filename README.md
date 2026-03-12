@@ -25,3 +25,15 @@ See full architecture diagrams here:
   - Query and chunk embeddings must be 1536 bytes long; otherwise, an early error occurs.
 
 - Multi-tenant: isolation by `tenant_id` (TEXT) via RLS and WHERE clauses in the adapter.
+
+## Health (liveness/readiness)
+
+- `GET /healthz`: liveness (proceso vivo, sin DB)
+- `GET /readyz`: readiness (valida DB + `row_security=on` + `set_config('app.tenant_id', ...)` + query m8nima)
+
+## Docker
+
+- `Dockerfile.api`: imagen para FastAPI (ASGI)
+- `Dockerfile.worker`: imagen para worker (ingesta)
+
+En `docker-compose.yml` se incluye un job `migrate` (one-shot) para aplicar Alembic antes de `api`/`worker`.

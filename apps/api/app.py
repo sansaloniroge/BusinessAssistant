@@ -32,4 +32,9 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(eval.router)
 
+    # Alias backwards-compat (si hab9a clientes llamando /health)
+    @app.get("/health", tags=["health"], include_in_schema=False)
+    async def _health_alias():
+        return {"status": "ok"}
+
     return app
