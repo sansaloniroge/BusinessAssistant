@@ -3,3 +3,7 @@
 __pycache__/
 .env
  alembic/__pycache__/
+
+ #Claude Code support files
+CLAUDE.md
+PORTFOLIO_GOALS.md
