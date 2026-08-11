@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__notion__notion-fetch",
+      "Bash(.venv/bin/ruff check *)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(git ls-files*)",
+      "Bash(git rev-parse*)",
+      "Bash(git fetch*)",
+      "Bash(git check-ignore*)",
+      "Bash(git branch -a)",
+      "Bash(git branch --show-current)",
+      "Bash(git stash list)",
+      "Bash(git stash show*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)"
+    ]
+  }
+}
