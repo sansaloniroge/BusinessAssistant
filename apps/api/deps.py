@@ -10,6 +10,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from packages.shared.schemas.common import TenantContext
 
 from apps.api.adapters.pgvector_vector_store import PgvectorVectorStore
+from apps.api.adapters.openai_embeddings import OpenAIEmbeddingService
 from apps.api.security import decode_jwt, is_dev_mode, require_role, require_scope, tenant_context_from_claims
 from apps.api.services.chat_service import ChatService
 from apps.api.services.citation_service import CitationService
@@ -276,7 +277,7 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
     if is_dev_mode() and os.getenv("DEV_DUMMY_EMBEDDINGS", "true").lower() in {"1", "true", "yes"}:
         embeddings = cast(EmbeddingService, _DummyEmbeddings())
     else:
-        embeddings = cast(EmbeddingService, _DummyEmbeddings())
+        embeddings = cast(EmbeddingService, OpenAIEmbeddingService())
 
     retrieval = RetrievalService(vector_store=vector_store, permissions=permissions, embeddings=embeddings)
 
