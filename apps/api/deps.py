@@ -11,6 +11,7 @@ from packages.shared.schemas.common import TenantContext
 
 from apps.api.adapters.pgvector_vector_store import PgvectorVectorStore
 from apps.api.adapters.openai_embeddings import OpenAIEmbeddingService
+from apps.api.adapters.openai_llm_client import OpenAILLMClient
 from apps.api.security import decode_jwt, is_dev_mode, require_role, require_scope, tenant_context_from_claims
 from apps.api.services.chat_service import ChatService
 from apps.api.services.citation_service import CitationService
@@ -272,7 +273,7 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
     if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
-        llm = LLMClient()
+        llm = OpenAILLMClient()
 
     if is_dev_mode() and os.getenv("DEV_DUMMY_EMBEDDINGS", "true").lower() in {"1", "true", "yes"}:
         embeddings = cast(EmbeddingService, _DummyEmbeddings())
@@ -301,7 +302,7 @@ async def get_eval_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> EvalSer
     if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
-        llm = LLMClient()
+        llm = OpenAILLMClient()
 
     judge = EvalJudgeService(llm=llm)
     runs_repo = _PostgresRunsRepo(pool)
