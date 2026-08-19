@@ -1,6 +1,8 @@
 {
   "permissions": {
     "allow": [
+      "Edit",
+      "Write",
       "mcp__notion__notion-fetch",
       "mcp__notion__notion-create-pages",
       "Bash(.venv/bin/ruff check *)",
