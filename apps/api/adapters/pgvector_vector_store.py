@@ -151,7 +151,7 @@ class PgvectorVectorStore(VectorStore):
                     doc_type,
                     list(map(str, tags)) if isinstance(tags, (list, tuple)) else [str(tags)],
                     doc_date,
-                    md,
+                    json.dumps(md),
                 )
             )
 
@@ -207,7 +207,7 @@ class PgvectorVectorStore(VectorStore):
                     doc_type,
                     list(map(str, tags)) if isinstance(tags, (list, tuple)) else [str(tags)],
                     doc_date,
-                    md,
+                    json.dumps(md),
                     str(c.get("embedding_model", "")),
                     str(c.get("chunker_version", "")),
                 )
