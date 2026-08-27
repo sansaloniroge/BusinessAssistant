@@ -6,6 +6,26 @@ asynchronous ingestion, and full observability.
 
 ---
 
+## Implementation status
+
+The diagrams below describe the target architecture. Not all of it is built yet — stated
+here explicitly instead of leaving the reader to assume the diagrams describe reality.
+
+| Component (from the diagrams below) | Status |
+|---|---|
+| FastAPI API — Chat, Eval routers | **Real.** `apps/api/routers/{chat,eval,health}.py` |
+| Auth Router / Documents Router / Feedback Router | **Not built.** Only `chat`, `eval`, `health` routers exist; no separate document-upload or feedback endpoints |
+| Retrieval Service, Prompt Builder, Citation Service, Run Logger | **Real.** `apps/api/services/*` |
+| Rerank Service | **Not built.** `use_rerank` exists as a request flag but there's no reranker implementation behind it |
+| Vector Store (pgvector) | **Real.** `PgvectorVectorStore`, with RLS actually enforced (see README) |
+| PostgreSQL (runs, conversations, eval, documents/chunks) | **Real** |
+| Ingestion Worker + Queue (SQS/Service Bus/Redis) | **Not built.** `apps/api/services/ports.py` defines the Extractor/Loader/Normalizer/Chunker/DeadLetterQueue protocols and `IngestionService` has a real state machine, but nothing implements or wires them. The only working ingestion path today is the synchronous `scripts/ingest_documents.py` |
+| Object Storage (S3/Blob) | **Not built.** Documents are ingested from local files, not uploaded/stored as blobs |
+| Observability (OTel traces/metrics) | **Real.** `apps/api/services/observability.py`, OTLP export if configured |
+| LLM / Embeddings API (OpenAI) | **Real.** `OpenAILLMClient`, `OpenAIEmbeddingService` |
+
+---
+
 ## C4 – Level 1: System Context
 
 ```mermaid
