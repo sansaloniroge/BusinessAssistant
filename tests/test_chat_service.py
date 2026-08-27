@@ -79,8 +79,8 @@ class _MessagesRepo:
     def __init__(self):
         self.messages = []
 
-    async def insert(self, conversation_id, role, content):
-        self.messages.append((conversation_id, role, content))
+    async def insert(self, conversation_id, tenant_id, role, content):
+        self.messages.append((conversation_id, tenant_id, role, content))
 
 
 @pytest.mark.asyncio
@@ -107,8 +107,8 @@ async def test_chat_service_refuses_when_low_evidence(tenant_ctx):
     assert res.citations == []
     assert "enough evidence" in res.answer
     assert len(convo.created) == 1
-    assert msgs.messages[0][1] == "user"
-    assert msgs.messages[1][1] == "assistant"
+    assert msgs.messages[0][2] == "user"
+    assert msgs.messages[1][2] == "assistant"
 
 
 @pytest.mark.asyncio
@@ -213,7 +213,7 @@ async def test_chat_service_propagates_llm_timeout_and_does_not_persist_run(tena
     # Se crea conversación y se inserta el mensaje del usuario, pero no el del asistente.
     assert len(convo.created) == 1
     assert len(msgs.messages) == 1
-    assert msgs.messages[0][1] == "user"
+    assert msgs.messages[0][2] == "user"
 
     # No se persiste run porque la generación falló.
     assert run_repo.inserted == []

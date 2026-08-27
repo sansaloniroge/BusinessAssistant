@@ -42,7 +42,7 @@ class _ConversationsRepo:
 
 
 class _MessagesRepo:
-    async def insert(self, conversation_id, role, content) -> None:
+    async def insert(self, conversation_id, tenant_id, role, content) -> None:
         return None
 
 
