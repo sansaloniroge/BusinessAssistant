@@ -30,7 +30,7 @@ class PostgresEvalCasesRepo:
         """
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(case.tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(case.tenant_id))
             await conn.execute(
                 sql,
                 str(case.tenant_id),

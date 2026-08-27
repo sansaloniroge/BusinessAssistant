@@ -19,9 +19,14 @@ TABLES_WITH_RLS = [
 
 
 def _db_url() -> str:
-    # Preferimos reusar el mismo env var que usa la app
+    # Preferimos reusar el mismo env var que usa la app. DATABASE_URL usa el
+    # esquema "postgresql://" sin driver explícito (así lo espera asyncpg, que
+    # es lo que usa el resto de la app); SQLAlchemy en cambio necesita el
+    # sufijo "+psycopg" para no caer por defecto en psycopg2 (no instalado).
     url = os.getenv("DATABASE_URL")
     if url:
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+psycopg://", 1)
         return url
     # fallback local
     return "postgresql+psycopg://app:app@localhost:5432/businessassistant"
@@ -122,6 +127,72 @@ def test_rls_tenant_isolation_runs():
         conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_b})
         got_b = conn.execute(text("SELECT COUNT(*) FROM runs WHERE run_id = CAST(:rid AS uuid)"), {"rid": run_id}).scalar_one()
         assert int(got_b) == 0
+
+
+@pytest.mark.integration
+def test_rls_tenant_isolation_documents_and_chunks():
+    # A diferencia de test_rls_enabled_and_policies_exist (que solo comprueba
+    # que la política existe), esto intenta romperlo de verdad: inserta un
+    # chunk bajo un tenant y confirma que otro tenant no puede leerlo, sobre
+    # la tabla que de hecho contiene el contenido del RAG.
+    engine = create_engine(_db_url())
+
+    tenant_a = str(uuid4())
+    tenant_b = str(uuid4())
+    doc_id = str(uuid4())
+    chunk_id = f"isolation-test-{uuid4()}"
+    embedding = "[" + ",".join(["0.01"] * 1536) + "]"
+
+    with engine.begin() as conn:
+        _assume_rls_role_or_skip(conn)
+
+        conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_a})
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents (tenant_id, doc_id, title)
+                VALUES (:tenant_id, CAST(:doc_id AS uuid), 'isolation test doc')
+                """
+            ),
+            {"tenant_id": tenant_a, "doc_id": doc_id},
+        )
+
+        conn.execute(
+            text(
+                f"""
+                INSERT INTO document_chunks (
+                  tenant_id, chunk_id, doc_id, title, content, embedding,
+                  embedding_model, chunker_version
+                ) VALUES (
+                  :tenant_id, :chunk_id, CAST(:doc_id AS uuid), 't', 'c', CAST(:embedding AS vector),
+                  'test-model', 'v1'
+                )
+                """
+            ),
+            {"tenant_id": tenant_a, "chunk_id": chunk_id, "doc_id": doc_id, "embedding": embedding},
+        )
+
+        got_a = conn.execute(
+            text("SELECT COUNT(*) FROM document_chunks WHERE chunk_id = :cid"),
+            {"cid": chunk_id},
+        ).scalar_one()
+        assert int(got_a) == 1
+
+        # Switch to tenant B: must not see the chunk nor the document
+        conn.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_b})
+
+        got_b = conn.execute(
+            text("SELECT COUNT(*) FROM document_chunks WHERE chunk_id = :cid"),
+            {"cid": chunk_id},
+        ).scalar_one()
+        doc_b = conn.execute(
+            text("SELECT COUNT(*) FROM documents WHERE doc_id = CAST(:doc_id AS uuid)"),
+            {"doc_id": doc_id},
+        ).scalar_one()
+
+        assert int(got_b) == 0
+        assert int(doc_b) == 0
 
 
 @pytest.mark.integration

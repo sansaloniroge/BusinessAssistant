@@ -24,7 +24,7 @@ See full architecture diagrams here:
 - Embedding dimension: fixed at `VECTOR(1536)` and validated in the adapter.
   - Query and chunk embeddings must be 1536 bytes long; otherwise, an early error occurs.
 
-- Multi-tenant: isolation by `tenant_id` (TEXT) via RLS and WHERE clauses in the adapter.
+- Multi-tenant: isolation by `tenant_id` (TEXT) via RLS *and* explicit `WHERE tenant_id = $X` clauses in the adapter — both matter. The app connects as `app_runtime`, a dedicated non-superuser/non-bypassrls role (`alembic/versions/0005_app_runtime_role.py`); migrations run as a separate admin role. This isn't cosmetic: a Postgres superuser ignores RLS unconditionally regardless of `ENABLE`/`FORCE ROW LEVEL SECURITY`, so connecting as one (as this project did until this was fixed) makes RLS policies decorative — real isolation would depend entirely on every query remembering its `WHERE tenant_id` filter, with no second layer of defense. `tests/test_migrations_and_rls.py` verifies isolation is actually enforced by inserting under one tenant and confirming a second tenant reads zero rows, on both `runs`/`conversations`/`messages` and `documents`/`document_chunks` (the RAG content itself).
 
 ## Evaluation
 

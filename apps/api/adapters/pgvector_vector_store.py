@@ -55,7 +55,7 @@ class PgvectorVectorStore(VectorStore):
         async with self._pool.acquire() as conn:
             # RLS convention: app.tenant_id must be set per connection
             # (still keep explicit filter in SQL as defense-in-depth)
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
             rows = await conn.fetch(sql, self._to_pgvector(query_embedding), *params)
 
         out: list[RetrievedChunk] = []
@@ -214,7 +214,7 @@ class PgvectorVectorStore(VectorStore):
             )
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
 
             # Fail-fast: if the chunk already exists, do not allow changing embedding_model/chunker_version
             existing = await conn.fetch(
@@ -253,7 +253,7 @@ class PgvectorVectorStore(VectorStore):
     async def delete_by_doc_id(self, *, tenant_id: str, doc_id: str) -> int:
         sql = "DELETE FROM document_chunks WHERE tenant_id = $1 AND doc_id = $2::uuid"
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
             res = await conn.execute(sql, tenant_id, doc_id)
         # res: "DELETE <n>"
         try:
@@ -264,7 +264,7 @@ class PgvectorVectorStore(VectorStore):
     async def delete_by_chunk_id(self, *, tenant_id: str, chunk_id: str) -> int:
         sql = "DELETE FROM document_chunks WHERE tenant_id = $1 AND chunk_id = $2"
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
             res = await conn.execute(sql, tenant_id, chunk_id)
         try:
             return int(res.split()[-1])

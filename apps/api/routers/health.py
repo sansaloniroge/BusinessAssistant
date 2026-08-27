@@ -33,7 +33,7 @@ async def readyz(pool: asyncpg.Pool = Depends(get_db_pool)) -> dict[str, str]:
             return {"status": "not_ready", "reason": "row_security_off"}
 
         # set tenant y consulta mínima (no importa 0 filas)
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant))
+        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant))
         await conn.fetchval("SELECT 1 FROM runs LIMIT 1")
 
     return {"status": "ready"}

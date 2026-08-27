@@ -149,7 +149,7 @@ class _PostgresRunsRepo:
         usage_json = usage.model_dump() if usage is not None and hasattr(usage, "model_dump") else None
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(data.tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(data.tenant_id))
             await conn.execute(
                 sql,
                 str(data.tenant_id),
@@ -173,7 +173,7 @@ class _PostgresRunsRepo:
         WHERE tenant_id = $1 AND run_id = $2::uuid
         """
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
             row = await conn.fetchrow(sql, str(tenant_id), str(run_id))
         if row is None:
             return None
@@ -220,7 +220,7 @@ class _PostgresEvalRepo:
         """
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
             await conn.execute(
                 sql,
                 str(tenant_id),
@@ -250,7 +250,7 @@ class _PostgresConversationsRepo:
         ON CONFLICT (tenant_id, conversation_id) DO NOTHING
         """
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx.tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(ctx.tenant_id))
             await conn.execute(sql, str(ctx.tenant_id), str(conversation_id), str(ctx.user_id))
 
 
@@ -270,7 +270,7 @@ class _PostgresMessagesRepo:
         )
         """
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
             await conn.execute(sql, str(tenant_id), str(conversation_id), str(role), str(content))
 
 
