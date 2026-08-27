@@ -24,7 +24,10 @@ def _get_db_url() -> str:
     if "db_url" in x_args and x_args["db_url"]:
         return str(x_args["db_url"])
 
-    env_url = os.getenv("DATABASE_URL")
+    # Migraciones necesitan el rol admin (DDL, CREATE ROLE, GRANT...), no el
+    # rol de runtime de mínimo privilegio que usa la app vía DATABASE_URL
+    # (ver 0005_app_runtime_role). No caer en DATABASE_URL como fallback aquí.
+    env_url = os.getenv("ALEMBIC_DATABASE_URL")
     if env_url:
         return env_url
 
