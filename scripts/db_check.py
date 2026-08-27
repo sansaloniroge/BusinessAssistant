@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from typing import NoReturn
@@ -59,7 +60,7 @@ async def main() -> NoReturn:
 
         # 3) RLS: set tenant_id por sesión
         tenant_id = "tenant_test"
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", tenant_id)
 
         # 4) insert mínimo + select (documentos + chunks)
         doc_id = uuid4()
@@ -125,7 +126,7 @@ async def main() -> NoReturn:
             str(run_id),
             str(user_id),
             str(conversation_id),
-            [str(doc_id)],
+            json.dumps([str(doc_id)]),
         )
 
         n_docs = await conn.fetchval("SELECT count(*) FROM documents")
@@ -149,7 +150,7 @@ async def main() -> NoReturn:
             raise SystemExit("RLS falló: runs de otro tenant")
 
         # Validar aislamiento: cambiando tenant, no debe ver las filas anteriores
-        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", "other_tenant")
+        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", "other_tenant")
 
         rows_other = await conn.fetch("SELECT tenant_id, chunk_id FROM document_chunks")
         print(f"select chunks (tenant=other_tenant, sin WHERE): {len(rows_other)} fila(s)")

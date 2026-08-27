@@ -35,7 +35,7 @@ class PostgresEvalRunsRepo:
         """
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
             await conn.execute(sql, str(tenant_id), str(eval_run_id), str(model), str(mode), int(max_cases))
 
         return PersistedEvalRun(tenant_id=str(tenant_id), eval_run_id=eval_run_id)
