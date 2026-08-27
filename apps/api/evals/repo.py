@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -35,7 +36,7 @@ class PostgresEvalCasesRepo:
                 str(case.tenant_id),
                 str(case_id),
                 str(case.question),
-                [str(x) for x in (case.expected_doc_ids or [])],
+                json.dumps([str(x) for x in (case.expected_doc_ids or [])]),
                 str(case.notes) if case.notes is not None else None,
             )
 

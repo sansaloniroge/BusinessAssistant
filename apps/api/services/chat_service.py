@@ -97,7 +97,7 @@ class ChatService:
                     await self._conversations_repo.create(conversation_id, ctx)
 
             with self._tracer.start_as_current_span("chat.message.insert", attributes={"role": "user"}):
-                await self._messages_repo.insert(conversation_id, role="user", content=req.message)
+                await self._messages_repo.insert(conversation_id, tenant_id=str(ctx.tenant_id), role="user", content=req.message)
 
             with self._tracer.start_as_current_span("retrieval.retrieve") as rspan:
                 r = await self._retrieval.retrieve(
@@ -129,7 +129,7 @@ class ChatService:
                 )
 
                 with self._tracer.start_as_current_span("chat.message.insert", attributes={"role": "assistant"}):
-                    await self._messages_repo.insert(conversation_id, role="assistant", content=answer)
+                    await self._messages_repo.insert(conversation_id, tenant_id=str(ctx.tenant_id), role="assistant", content=answer)
 
                 refusal_reason = (
                     self._policy.strict_refusal_reason if req.mode == ChatMode.strict else None
@@ -230,7 +230,7 @@ class ChatService:
                         f"{self._policy.strict_refusal_text}\n"
                         "Please provide more documentation or rephrase the question."
                     )
-                    await self._messages_repo.insert(conversation_id, role="assistant", content=answer)
+                    await self._messages_repo.insert(conversation_id, tenant_id=str(ctx.tenant_id), role="assistant", content=answer)
 
                     self._strict_refusals.add(
                         1,
@@ -280,7 +280,7 @@ class ChatService:
                         retrieval_debug=debug,
                     )
 
-            await self._messages_repo.insert(conversation_id, role="assistant", content=llm_res.text)
+            await self._messages_repo.insert(conversation_id, tenant_id=str(ctx.tenant_id), role="assistant", content=llm_res.text)
 
             if r.evidence_strength >= threshold + 0.15:
                 conf = ConfidenceLevel.high

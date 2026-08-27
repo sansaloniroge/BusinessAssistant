@@ -3,6 +3,7 @@
 __pycache__/
 .env
  alembic/__pycache__/
+.eval_artifacts/
 
  #Claude Code support files
 CLAUDE.md
