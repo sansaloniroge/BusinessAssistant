@@ -6,6 +6,12 @@ An internal "ask your company's docs" assistant: a multi-tenant RAG API that ans
 
 Internal knowledge (HR policies, IT/security rules, finance processes, runbooks) is scattered across documents that employees either can't find or don't read. A generic chatbot would happily hallucinate an answer instead of saying "I don't know" — which is worse than no answer at all in a compliance-sensitive company context. This project is a narrow, honest answer to that: retrieval-grounded chat, per-tenant isolated, that would rather refuse than make something up.
 
+## Demo
+
+![A question the ingested docs answer, cited; a question they don't cover, refused](docs/demo.gif)
+
+Two real calls against the running API (no mocking): a question the sample docs actually cover comes back cited (`[C1]` → source doc), a question nothing covers gets refused instead of a guess. Full setup below reproduces this from scratch; `docs/demo.tape` is the [VHS](https://github.com/charmbracelet/vhs) script that generated the GIF (`vhs docs/demo.tape`, API already running).
+
 ## Architecture
 
 👉 [Architecture documentation](docs/architecture.md) has the full C4 diagrams. Read `docs/architecture.md`'s "Implementation status" section first — the diagrams describe a target architecture (async worker, queue, object storage, reranker) that's broader than what's actually implemented today; see [Known limitations](#known-limitations) below for the honest gap.
@@ -57,7 +63,23 @@ Verified end-to-end from a completely clean `docker compose down -v` + fresh vol
 - **Strict mode refuses instead of guessing.** `CitationService.validate_strict` rejects answers that don't cite retrieved chunks in the `[C1]`-style format the system prompt requires. This is deliberately conservative: the [Evaluation](#evaluation) run shows it currently over-refuses (2/5 grounded questions incorrectly rejected because the LLM's citation formatting wasn't consistent) — a false "I don't know" is judged a smaller failure here than a fabricated policy answer.
 - **Naive paragraph chunking, not semantic chunking.** `scripts/ingest_documents.py` splits by paragraph up to ~800 chars with a small overlap. It doesn't understand document structure. This is intentionally the cheapest thing that works for a handful of documents, not a claim that it's optimal — see limitations.
 - **`text-embedding-3-small` / `gpt-4.1-mini`.** Both are OpenAI's cheaper tier: this is a portfolio project evaluated on dozens of queries, not a cost-at-scale decision. The adapter boundary (`OpenAIEmbeddingService`, `OpenAILLMClient`) exists specifically so swapping to a bigger model, or a different provider, is a one-class change.
-- **RLS *and* explicit `WHERE tenant_id` filters, not either/or.** The app connects as `app_runtime`, a dedicated non-superuser/non-bypassrls Postgres role (`alembic/versions/0005_app_runtime_role.py`) — a superuser ignores RLS unconditionally, which is what this project did until that migration, making RLS decorative. `tests/test_migrations_and_rls.py` proves isolation by actually inserting under one tenant and confirming a second tenant reads zero rows, not just checking a policy exists.
+- **RLS *and* explicit `WHERE tenant_id` filters, not either/or** — see below, this one has its own story.
+
+## A security bug I found and fixed: RLS was silently decorative
+
+Multi-tenant isolation is easy to claim and easy to get subtly wrong, so instead of assuming the Postgres RLS policies already in place were doing their job, I tried to actually break isolation. They weren't.
+
+**What I assumed:** every tenant-scoped table (`documents`, `document_chunks`, `runs`, `conversations`, `messages`, the eval tables) had `ENABLE`/`FORCE ROW LEVEL SECURITY` and a `USING (tenant_id = current_setting('app.tenant_id', true))` policy — which was true, and had been since early on. I assumed that meant isolation was enforced.
+
+**What I found:** the role the app actually connected as (`app`, from `POSTGRES_USER` in docker-compose) is a Postgres **superuser**. A superuser ignores row-level security unconditionally — `FORCE ROW LEVEL SECURITY` has no effect on it, and neither does the `SET row_security = on` the code already had, on a mistaken assumption about what that setting controls (it only matters for non-superuser roles with the separate `BYPASSRLS` attribute). I confirmed this directly against `pg_roles` rather than trusting a comment in the code that claimed otherwise.
+
+**Why it had gone unnoticed:** every test that exercised RLS mocked the database connection, so none of them ever hit real Postgres enforcement. And every real query also had an explicit `WHERE tenant_id = $X` filter, so results were always correct in practice — RLS was a second layer of defense that had quietly stopped doing anything, with no visible symptom.
+
+**The fix:** a dedicated, non-superuser, non-bypassrls role (`app_runtime`) for the app's actual runtime connections, created idempotently by `alembic/versions/0005_app_runtime_role.py` with only the DML grants it needs; migrations keep running as the original admin role. Fixing this also surfaced a second bug hiding behind the first: `set_config('app.tenant_id', $1, true)`'s `true` is `SET LOCAL` semantics, which don't persist without an explicit transaction wrapping the statement that depends on them — `app.tenant_id` was silently resetting between the `set_config` call and the query after it, invisible while the connecting role bypassed RLS anyway, and immediately fatal (blocked inserts) the moment RLS started actually being enforced.
+
+**Proof, not a claim:** `tests/test_migrations_and_rls.py` inserts a row under one tenant and asserts a second tenant reads zero rows, for `runs`, `conversations`/`messages`, and `documents`/`document_chunks`. I also verified by hand, connected directly as `app_runtime`: zero rows with no tenant set, zero rows for a fabricated tenant, and a cross-tenant `INSERT` rejected outright with `InsufficientPrivilegeError`.
+
+Full details in [PR #23](https://github.com/sansaloniroge/BusinessAssistant/pull/23).
 
 ## Evaluation
 
@@ -91,7 +113,7 @@ Stated explicitly rather than glossed over — a small, honestly-scoped project 
 - **Cost per query isn't implemented.** `LLMUsage.cost_estimate_usd` always resolves to `0.0` — no per-model pricing table exists yet.
 - **Citations passed to the judge are a proxy** (`retrieval_debug.used_chunk_ids`), not the full cited text — the `runs` table doesn't persist full `Citation` objects.
 - **Rate limiting fails open by default and there's no Redis service in `docker-compose.yml`** — `check_rate_limit` silently allows all requests if Redis is unreachable, which is exactly the state a fresh `docker compose up` leaves you in unless you run Redis separately.
-- **No deployed demo yet** — verified via a clean `docker compose up` + migrations + ingestion + eval run instead (see [How to run it](#how-to-run-it)).
+- **No deployed/hosted demo** — a public `/chat` backed by real OpenAI calls and dev-mode header auth is a real cost/abuse surface for a portfolio project. Verified instead via a clean `docker compose up` + migrations + ingestion + eval run (see [How to run it](#how-to-run-it)) and the GIF above, which is a real recorded run, not a mockup.
 
 ## What's next
 
