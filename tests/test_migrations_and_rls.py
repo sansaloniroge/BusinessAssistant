@@ -32,6 +32,16 @@ def _db_url() -> str:
     return "postgresql+psycopg://app:app@localhost:5432/businessassistant"
 
 
+def _admin_db_url() -> str:
+    # DATABASE_URL apunta al rol de mínimo privilegio (app_runtime), que no
+    # tiene permisos sobre alembic_version a propósito. Para comprobar el
+    # estado de las migraciones hace falta el rol admin.
+    url = os.getenv("ALEMBIC_DATABASE_URL")
+    if url:
+        return url
+    return "postgresql+psycopg://app:app@localhost:5432/businessassistant"
+
+
 def _rls_test_role() -> str:
     # Rol sin privilegios (sin BYPASSRLS) para poder testear RLS incluso si el user principal es superuser.
     return os.getenv("RLS_TEST_ROLE", "rls_test")
@@ -53,11 +63,9 @@ def _assume_rls_role_or_skip(conn) -> str:
 @pytest.mark.integration
 def test_alembic_upgrade_head_smoke():
     # Smoke: debe aplicar sin excepciones y dejar alembic_version.
-    env = dict(os.environ)
-    env["DATABASE_URL"] = _db_url()
-    subprocess.check_call(["alembic", "upgrade", "head"], env=env)
+    subprocess.check_call(["alembic", "upgrade", "head"], env=dict(os.environ))
 
-    engine = create_engine(_db_url())
+    engine = create_engine(_admin_db_url())
     with engine.begin() as conn:
         v = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     assert isinstance(v, str) and v
