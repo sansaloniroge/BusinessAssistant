@@ -122,3 +122,7 @@ Stated explicitly rather than glossed over — a small, honestly-scoped project 
 - Add a Redis service to `docker-compose.yml` so rate limiting is exercised by default instead of silently failing open.
 - Implement real per-model cost tracking.
 - Grow the eval dataset past a smoke-test size once there's more real content to test against.
+
+## License
+
+[MIT](LICENSE)
