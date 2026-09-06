@@ -26,7 +26,7 @@ class IngestionService:
     async def start_processing(self, *, ctx: TenantContext, doc_id: UUID) -> None:
         """Transición: pending → processing (o permanece en processing si ya está)."""
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx.tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", ctx.tenant_id)
             await conn.execute(
                 """
                 UPDATE documents
@@ -40,7 +40,7 @@ class IngestionService:
     async def mark_ready(self, *, ctx: TenantContext, doc_id: UUID) -> None:
         """Transición: processing → ready."""
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx.tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", ctx.tenant_id)
             await conn.execute(
                 """
                 UPDATE documents
@@ -54,7 +54,7 @@ class IngestionService:
     async def mark_failed(self, *, ctx: TenantContext, doc_id: UUID) -> None:
         """Transición: cualquier estado → failed."""
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx.tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", ctx.tenant_id)
             await conn.execute(
                 """
                 UPDATE documents
@@ -83,7 +83,7 @@ class IngestionService:
         { attempts: [attempt_id...], last_attempt_id, last_attempt_at }
         """
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx.tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", ctx.tenant_id)
             await conn.execute(
                 """
                 UPDATE documents
@@ -107,7 +107,7 @@ class IngestionService:
     async def end_attempt(self, *, ctx: TenantContext, doc_id: UUID, attempt_id: UUID, success: bool) -> None:
         """Registra fin de intento de ingesta y resultado en documents.metadata."""
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx.tenant_id)
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", ctx.tenant_id)
             await conn.execute(
                 """
                 UPDATE documents

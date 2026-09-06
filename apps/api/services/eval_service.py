@@ -65,12 +65,18 @@ class EvalService:
         eval_run_id_eff = eval_run_id or inferred_eval_run_id
         eval_case_id_eff = eval_case_id or inferred_eval_case_id
 
+        # El run persistido no guarda los objetos Citation completos (no hay tabla para
+        # ello); usamos los chunk_ids que ChatService ya deja en retrieval_debug como
+        # proxy, para que el judge no evalúe citation_quality a ciegas.
+        used_chunk_ids = list(retrieval_debug.get("used_chunk_ids") or [])
+        citations = [{"chunk_id": str(cid)} for cid in used_chunk_ids]
+
         inp = JudgeInput(
             tenant_id=str(ctx.tenant_id),
             run_id=run_id,
             question=str(run["question"]),
             answer=str(run["answer"]),
-            citations=[],
+            citations=citations,
             retrieved_doc_ids=list(run.get("retrieved_doc_ids") or []),
             retrieval_debug=retrieval_debug,
             mode=str(retrieval_debug.get("mode") or self._default_mode),

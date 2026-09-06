@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import Sequence, cast
 from uuid import UUID
@@ -11,6 +12,7 @@ from packages.shared.schemas.common import TenantContext
 
 from apps.api.adapters.pgvector_vector_store import PgvectorVectorStore
 from apps.api.adapters.openai_embeddings import OpenAIEmbeddingService
+from apps.api.adapters.openai_llm_client import OpenAILLMClient
 from apps.api.security import decode_jwt, is_dev_mode, require_role, require_scope, tenant_context_from_claims
 from apps.api.services.chat_service import ChatService
 from apps.api.services.citation_service import CitationService
@@ -147,7 +149,7 @@ class _PostgresRunsRepo:
         usage_json = usage.model_dump() if usage is not None and hasattr(usage, "model_dump") else None
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(data.tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(data.tenant_id))
             await conn.execute(
                 sql,
                 str(data.tenant_id),
@@ -157,9 +159,9 @@ class _PostgresRunsRepo:
                 str(data.question),
                 str(data.answer),
                 str(data.model),
-                usage_json,
-                list(getattr(data, "retrieved_doc_ids", []) or []),
-                dict(getattr(data, "retrieval_debug", {}) or {}),
+                json.dumps(usage_json) if usage_json is not None else None,
+                json.dumps(list(getattr(data, "retrieved_doc_ids", []) or []), default=str),
+                json.dumps(dict(getattr(data, "retrieval_debug", {}) or {}), default=str),
             )
 
     async def get_run(self, *, tenant_id: str, run_id: UUID) -> dict | None:
@@ -171,9 +173,18 @@ class _PostgresRunsRepo:
         WHERE tenant_id = $1 AND run_id = $2::uuid
         """
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
             row = await conn.fetchrow(sql, str(tenant_id), str(run_id))
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+
+        out = dict(row)
+        # asyncpg no tiene codec de jsonb registrado en este pool: las columnas
+        # jsonb vuelven como str JSON crudo, no como dict/list ya parseados.
+        for key in ("usage", "retrieved_doc_ids", "retrieval_debug"):
+            if isinstance(out.get(key), str):
+                out[key] = json.loads(out[key])
+        return out
 
 
 class _PostgresEvalRepo:
@@ -209,7 +220,7 @@ class _PostgresEvalRepo:
         """
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
             await conn.execute(
                 sql,
                 str(tenant_id),
@@ -224,7 +235,7 @@ class _PostgresEvalRepo:
                 int(output.refusal_correctness),
                 str(output.rationale),
                 str(judge_model),
-                judge_usage,
+                json.dumps(judge_usage) if judge_usage is not None else None,
             )
 
 
@@ -239,7 +250,7 @@ class _PostgresConversationsRepo:
         ON CONFLICT (tenant_id, conversation_id) DO NOTHING
         """
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx.tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(ctx.tenant_id))
             await conn.execute(sql, str(ctx.tenant_id), str(conversation_id), str(ctx.user_id))
 
 
@@ -247,20 +258,20 @@ class _PostgresMessagesRepo:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def insert(self, conversation_id, *, role: str, content: str) -> None:
+    async def insert(self, conversation_id, *, tenant_id: str, role: str, content: str) -> None:
         sql = """
         INSERT INTO messages (tenant_id, message_id, conversation_id, role, content)
         VALUES (
-          current_setting('app.tenant_id', true),
+          $1,
           gen_random_uuid(),
-          $1::uuid,
-          $2,
-          $3
+          $2::uuid,
+          $3,
+          $4
         )
         """
         async with self._pool.acquire() as conn:
-            # tenant_id debe estar seteado por request
-            await conn.execute(sql, str(conversation_id), str(role), str(content))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(tenant_id))
+            await conn.execute(sql, str(tenant_id), str(conversation_id), str(role), str(content))
 
 
 async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatService:
@@ -272,7 +283,7 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
     if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
-        llm = LLMClient()
+        llm = OpenAILLMClient()
 
     if is_dev_mode() and os.getenv("DEV_DUMMY_EMBEDDINGS", "true").lower() in {"1", "true", "yes"}:
         embeddings = cast(EmbeddingService, _DummyEmbeddings())
@@ -301,7 +312,7 @@ async def get_eval_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> EvalSer
     if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
-        llm = LLMClient()
+        llm = OpenAILLMClient()
 
     judge = EvalJudgeService(llm=llm)
     runs_repo = _PostgresRunsRepo(pool)

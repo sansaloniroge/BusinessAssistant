@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -29,13 +30,13 @@ class PostgresEvalCasesRepo:
         """
 
         async with self._pool.acquire() as conn:
-            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(case.tenant_id))
+            await conn.execute("SELECT set_config('app.tenant_id', $1, false)", str(case.tenant_id))
             await conn.execute(
                 sql,
                 str(case.tenant_id),
                 str(case_id),
                 str(case.question),
-                [str(x) for x in (case.expected_doc_ids or [])],
+                json.dumps([str(x) for x in (case.expected_doc_ids or [])]),
                 str(case.notes) if case.notes is not None else None,
             )
 

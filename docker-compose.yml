@@ -3,13 +3,17 @@ services:
     image: pgvector/pgvector:pg16
     container_name: businessassistant-postgres
     environment:
-      # Importante: el user 'app' no debe ser superuser en prod/ci.
-      # Usamos el usuario default 'postgres' para bootstrap y creamos el rol app via init script.
+      # POSTGRES_USER es el rol bootstrap (superuser) que crea la imagen oficial de
+      # Postgres; se usa solo para migraciones/admin (ver ALEMBIC_DATABASE_URL).
+      # APP_DB_USER/APP_DB_PASSWORD son para el rol de runtime de mínimo privilegio
+      # (no superuser, no bypassrls) que crea alembic/versions/0005_app_runtime_role.py
+      # — necesario para que las políticas RLS se apliquen de verdad: un superuser
+      # las ignora siempre, sin importar ENABLE/FORCE ROW LEVEL SECURITY.
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-businessassistant}
-      APP_DB_USER: ${APP_DB_USER:-app}
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-app}
+      APP_DB_USER: ${APP_DB_USER:-app_runtime}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-app_runtime}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
