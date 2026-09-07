@@ -1,0 +1,16 @@
+{
+  "score_pct": 97.5,
+  "avg_overall": 4.875,
+  "n": 8,
+  "tenant_id": "tenant_test",
+  "eval_mode": "strict",
+  "eval_model": "gpt-4.1-mini",
+  "per_metric_avg": {
+    "faithfulness": 5.0,
+    "relevance": 5.0,
+    "citation_quality": 2.625,
+    "refusal_correctness": 4.375
+  },
+  "commit_sha": "c46f70f8a7c6d31ad96757460a054ee3a8caa0b4",
+  "updated_at": "2026-09-07T06:25:35.314851+00:00"
+}

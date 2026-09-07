@@ -102,6 +102,18 @@ Quantitative evaluation via LLM-as-judge (`EvalJudgeService`), run against the *
 
 Raw results land in `.eval_artifacts/eval_run_<id>.json` (gitignored) — re-run with `python -m scripts.eval_runner --tenant-id tenant_test --user-id <uuid>`.
 
+### CI eval gate
+
+Every PR into `dev` runs the eval suite for real (`.github/workflows/eval-gate.yml`): boots Postgres/pgvector, migrates, ingests the sample docs, starts the API against real OpenAI, runs `scripts/eval_runner.py`, then scores it (`scripts/eval_gate_check.py` — mean `overall` judge score as a percentage) against `eval_baseline.json`. The PR fails and gets a comment with the score breakdown if it drops more than 2 percentage points below the baseline; a PR with no relevant changes passes without any manual step. Current baseline: `eval_baseline.json` (97.50%, avg overall 4.88/5, n=8).
+
+**Updating the baseline on purpose**, when a change genuinely improves the system (not to hide a regression): run the eval locally, then
+
+```bash
+python -m scripts.update_eval_baseline .eval_artifacts/eval_run_<id>.json
+```
+
+It prints the old vs. new score and asks for confirmation before overwriting `eval_baseline.json`. Commit the updated file as part of the same PR.
+
 ## Known limitations
 
 Stated explicitly rather than glossed over — a small, honestly-scoped project is worth more than one that oversells itself:

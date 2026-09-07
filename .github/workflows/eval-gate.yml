@@ -1,0 +1,120 @@
+name: eval-gate
+
+on:
+  pull_request:
+    branches: [dev]
+
+env:
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  POSTGRES_DB: businessassistant
+  APP_DB_USER: app_runtime
+  APP_DB_PASSWORD: app_runtime
+  DATABASE_URL: postgresql://app_runtime:app_runtime@localhost:5432/businessassistant
+  ALEMBIC_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/businessassistant
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  OPENAI_EMBEDDING_MODEL: text-embedding-3-small
+  EVAL_TENANT_ID: tenant_test
+  EVAL_USER_ID: 11111111-1111-1111-1111-111111111111
+
+jobs:
+  eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start Postgres (pgvector)
+        run: docker compose up -d --wait postgres
+
+      - name: Run migrations
+        run: python -m alembic upgrade head
+
+      - name: Ingest sample documents
+        run: python -m scripts.ingest_documents
+
+      - name: Start API
+        run: |
+          DEV_DUMMY_LLM=false DEV_DUMMY_EMBEDDINGS=false \
+            nohup uvicorn apps.api.asgi:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && exit 0
+            sleep 1
+          done
+          echo "API never became healthy" && cat uvicorn.log && exit 1
+
+      - name: Run eval suite
+        run: python -m scripts.eval_runner --tenant-id "$EVAL_TENANT_ID" --user-id "$EVAL_USER_ID" --out-dir ./.eval_artifacts
+
+      - name: Score eval run and check against baseline
+        id: eval_gate
+        continue-on-error: true
+        run: |
+          run_json=$(ls -t .eval_artifacts/eval_run_*.json | head -n1)
+          python -m scripts.eval_gate_check "$run_json" --out eval_result.json
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            eval_result.json
+            .eval_artifacts/
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let result;
+            try {
+              result = JSON.parse(fs.readFileSync('eval_result.json', 'utf8'));
+            } catch (e) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '⚠️ eval-gate: could not read eval_result.json — the eval run likely failed before scoring. Check the workflow logs.',
+              });
+              return;
+            }
+
+            const status = result.passed ? '✅ PASS' : '❌ FAIL';
+            const body = [
+              `### Eval gate: ${status}`,
+              '',
+              `| Metric | Value |`,
+              `|---|---|`,
+              `| Score | ${result.score_pct.toFixed(2)}% (avg overall ${result.avg_overall.toFixed(2)}/5, n=${result.n}) |`,
+              `| Baseline | ${result.baseline_score_pct.toFixed(2)}% |`,
+              `| Tolerance | ${result.tolerance_pct.toFixed(2)}pp |`,
+              `| Delta | ${result.delta_pct >= 0 ? '+' : ''}${result.delta_pct.toFixed(2)}pp |`,
+              `| Faithfulness | ${result.per_metric_avg.faithfulness.toFixed(2)}/5 |`,
+              `| Relevance | ${result.per_metric_avg.relevance.toFixed(2)}/5 |`,
+              `| Citation quality | ${result.per_metric_avg.citation_quality.toFixed(2)}/5 |`,
+              `| Refusal correctness | ${result.per_metric_avg.refusal_correctness.toFixed(2)}/5 |`,
+              '',
+              result.passed
+                ? '_No regression detected._'
+                : '_Score dropped below baseline minus tolerance. If this drop is expected (a real regression to fix), update the code. If the change intentionally improves the system, run `python -m scripts.update_eval_baseline <eval_run.json>` locally and commit the new `eval_baseline.json`._',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Fail if eval regressed
+        if: steps.eval_gate.outcome == 'failure'
+        run: exit 1
