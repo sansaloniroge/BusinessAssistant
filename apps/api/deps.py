@@ -13,6 +13,7 @@ from packages.shared.schemas.common import TenantContext
 from apps.api.adapters.pgvector_vector_store import PgvectorVectorStore
 from apps.api.adapters.openai_embeddings import OpenAIEmbeddingService
 from apps.api.adapters.openai_llm_client import OpenAILLMClient
+from apps.api.adapters.azure_openai_llm_client import AzureOpenAILLMClient
 from apps.api.security import decode_jwt, is_dev_mode, require_role, require_scope, tenant_context_from_claims
 from apps.api.services.chat_service import ChatService
 from apps.api.services.citation_service import CitationService
@@ -274,6 +275,19 @@ class _PostgresMessagesRepo:
             await conn.execute(sql, str(tenant_id), str(conversation_id), str(role), str(content))
 
 
+def _build_real_llm_client() -> LLMClient:
+    """Instancia el LLMClient real según `LLM_PROVIDER` (`openai` por defecto, o
+    `azure_openai`) -- selección por config, no por cambio de código. Ver README
+    ("Portabilidad de proveedor") para el patrón Adapter detrás de esto.
+    """
+    provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+    if provider == "azure_openai":
+        return AzureOpenAILLMClient()
+    if provider == "openai":
+        return OpenAILLMClient()
+    raise ValueError(f"LLM_PROVIDER desconocido: {provider!r} (usa 'openai' o 'azure_openai')")
+
+
 async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatService:
     # Infra/adapters mínimos
     vector_store = PgvectorVectorStore(pool)
@@ -283,7 +297,7 @@ async def get_chat_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> ChatSer
     if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
-        llm = OpenAILLMClient()
+        llm = _build_real_llm_client()
 
     if is_dev_mode() and os.getenv("DEV_DUMMY_EMBEDDINGS", "true").lower() in {"1", "true", "yes"}:
         embeddings = cast(EmbeddingService, _DummyEmbeddings())
@@ -312,7 +326,7 @@ async def get_eval_service(pool: asyncpg.Pool = Depends(get_db_pool)) -> EvalSer
     if is_dev_mode() and os.getenv("DEV_DUMMY_LLM", "true").lower() in {"1", "true", "yes"}:
         llm: LLMClient = _DummyLLM()
     else:
-        llm = OpenAILLMClient()
+        llm = _build_real_llm_client()
 
     judge = EvalJudgeService(llm=llm)
     runs_repo = _PostgresRunsRepo(pool)

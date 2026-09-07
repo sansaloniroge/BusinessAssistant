@@ -65,6 +65,14 @@ Verified end-to-end from a completely clean `docker compose down -v` + fresh vol
 - **`text-embedding-3-small` / `gpt-4.1-mini`.** Both are OpenAI's cheaper tier: this is a portfolio project evaluated on dozens of queries, not a cost-at-scale decision. The adapter boundary (`OpenAIEmbeddingService`, `OpenAILLMClient`) exists specifically so swapping to a bigger model, or a different provider, is a one-class change.
 - **RLS *and* explicit `WHERE tenant_id` filters, not either/or** — see below, this one has its own story.
 
+## Provider portability
+
+`LLMClient` (`apps/api/services/llm_client.py`) is an Adapter: an abstract base class with one method to implement (`_generate_impl`), while the base class itself owns the cross-cutting bits (timeout, usage normalization) so every adapter gets them for free. `OpenAILLMClient` and `AzureOpenAILLMClient` (`apps/api/adapters/`) are two interchangeable implementations of it; `ChatService`/`EvalJudgeService` depend only on the abstract type, never on either concrete class. Which one gets constructed is a config decision (`LLM_PROVIDER=openai|azure_openai` in `.env`, read by `apps/api/deps.py:_build_real_llm_client`), not a code change — the same pattern used for SEPA/NEST data-transformation adapters in my prior backend work, applied here to LLM providers instead of payment-file formats.
+
+One real wrinkle worth naming: Azure OpenAI routes requests by **deployment name** (an alias you choose when you deploy a model to your Azure resource), not by the model family string (`gpt-4.1-mini`) the rest of the app uses. `AzureOpenAILLMClient` deliberately ignores the `model` argument `LLMClient.generate()` passes it and always calls its single configured `AZURE_OPENAI_DEPLOYMENT` — correct for this portfolio's one-model-at-a-time usage, but it would need a `model → deployment` mapping to support routing chat and judge calls to two different Azure deployments.
+
+Unit-tested against a fake client (same pattern as `OpenAILLMClient`'s tests) for both providers. **Not yet verified against a real Azure OpenAI resource** — see [What's next](#whats-next); the interface and env-var wiring are real, the live-Azure run is a pending manual step, not a claimed result.
+
 ## A security bug I found and fixed: RLS was silently decorative
 
 Multi-tenant isolation is easy to claim and easy to get subtly wrong, so instead of assuming the Postgres RLS policies already in place were doing their job, I tried to actually break isolation. They weren't.
@@ -122,6 +130,7 @@ Stated explicitly rather than glossed over — a small, honestly-scoped project 
 - Add a Redis service to `docker-compose.yml` so rate limiting is exercised by default instead of silently failing open.
 - Implement real per-model cost tracking.
 - Grow the eval dataset past a smoke-test size once there's more real content to test against.
+- Run `AzureOpenAILLMClient` against a real Azure OpenAI resource and record the result (see [Provider portability](#provider-portability)) — implemented and unit-tested, not yet live-verified.
 
 ## License
 
