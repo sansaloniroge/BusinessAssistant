@@ -71,7 +71,7 @@ Verified end-to-end from a completely clean `docker compose down -v` + fresh vol
 
 One real wrinkle worth naming: Azure OpenAI routes requests by **deployment name** (an alias you choose when you deploy a model to your Azure resource), not by the model family string (`gpt-4.1-mini`) the rest of the app uses. `AzureOpenAILLMClient` deliberately ignores the `model` argument `LLMClient.generate()` passes it and always calls its single configured `AZURE_OPENAI_DEPLOYMENT` — correct for this portfolio's one-model-at-a-time usage, but it would need a `model → deployment` mapping to support routing chat and judge calls to two different Azure deployments.
 
-Unit-tested against a fake client (same pattern as `OpenAILLMClient`'s tests) for both providers. **Not yet verified against a real Azure OpenAI resource** — see [What's next](#whats-next); the interface and env-var wiring are real, the live-Azure run is a pending manual step, not a claimed result.
+Unit-tested against a fake client (same pattern as `OpenAILLMClient`'s tests) for both providers, and **verified against a real Azure OpenAI resource** (own resource, `gpt-4.1-mini` deployment): same `/chat` request, only `LLM_PROVIDER=azure_openai` + `AZURE_OPENAI_*` set in `.env`, no code change. Real cited, grounded answer back (`usage.model: "gpt-4.1-mini"`, 1330 tokens, 2.25s latency) — same quality as the OpenAI path on the same question.
 
 ## A security bug I found and fixed: RLS was silently decorative
 
@@ -130,7 +130,6 @@ Stated explicitly rather than glossed over — a small, honestly-scoped project 
 - Add a Redis service to `docker-compose.yml` so rate limiting is exercised by default instead of silently failing open.
 - Implement real per-model cost tracking.
 - Grow the eval dataset past a smoke-test size once there's more real content to test against.
-- Run `AzureOpenAILLMClient` against a real Azure OpenAI resource and record the result (see [Provider portability](#provider-portability)) — implemented and unit-tested, not yet live-verified.
 
 ## License
 
