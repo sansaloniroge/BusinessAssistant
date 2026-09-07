@@ -65,6 +65,14 @@ Verified end-to-end from a completely clean `docker compose down -v` + fresh vol
 - **`text-embedding-3-small` / `gpt-4.1-mini`.** Both are OpenAI's cheaper tier: this is a portfolio project evaluated on dozens of queries, not a cost-at-scale decision. The adapter boundary (`OpenAIEmbeddingService`, `OpenAILLMClient`) exists specifically so swapping to a bigger model, or a different provider, is a one-class change.
 - **RLS *and* explicit `WHERE tenant_id` filters, not either/or** — see below, this one has its own story.
 
+## Provider portability
+
+`LLMClient` (`apps/api/services/llm_client.py`) is an Adapter: an abstract base class with one method to implement (`_generate_impl`), while the base class itself owns the cross-cutting bits (timeout, usage normalization) so every adapter gets them for free. `OpenAILLMClient` and `AzureOpenAILLMClient` (`apps/api/adapters/`) are two interchangeable implementations of it; `ChatService`/`EvalJudgeService` depend only on the abstract type, never on either concrete class. Which one gets constructed is a config decision (`LLM_PROVIDER=openai|azure_openai` in `.env`, read by `apps/api/deps.py:_build_real_llm_client`), not a code change — the same pattern used for SEPA/NEST data-transformation adapters in my prior backend work, applied here to LLM providers instead of payment-file formats.
+
+One real wrinkle worth naming: Azure OpenAI routes requests by **deployment name** (an alias you choose when you deploy a model to your Azure resource), not by the model family string (`gpt-4.1-mini`) the rest of the app uses. `AzureOpenAILLMClient` deliberately ignores the `model` argument `LLMClient.generate()` passes it and always calls its single configured `AZURE_OPENAI_DEPLOYMENT` — correct for this portfolio's one-model-at-a-time usage, but it would need a `model → deployment` mapping to support routing chat and judge calls to two different Azure deployments.
+
+Unit-tested against a fake client (same pattern as `OpenAILLMClient`'s tests) for both providers, and **verified against a real Azure OpenAI resource** (own resource, `gpt-4.1-mini` deployment): same `/chat` request, only `LLM_PROVIDER=azure_openai` + `AZURE_OPENAI_*` set in `.env`, no code change. Real cited, grounded answer back (`usage.model: "gpt-4.1-mini"`, 1330 tokens, 2.25s latency) — same quality as the OpenAI path on the same question.
+
 ## A security bug I found and fixed: RLS was silently decorative
 
 Multi-tenant isolation is easy to claim and easy to get subtly wrong, so instead of assuming the Postgres RLS policies already in place were doing their job, I tried to actually break isolation. They weren't.
@@ -101,6 +109,18 @@ Quantitative evaluation via LLM-as-judge (`EvalJudgeService`), run against the *
 | False rejections (grounded, 5 cases) | 2 / 5 |
 
 Raw results land in `.eval_artifacts/eval_run_<id>.json` (gitignored) — re-run with `python -m scripts.eval_runner --tenant-id tenant_test --user-id <uuid>`.
+
+### CI eval gate
+
+Every PR into `dev` runs the eval suite for real (`.github/workflows/eval-gate.yml`): boots Postgres/pgvector, migrates, ingests the sample docs, starts the API against real OpenAI, runs `scripts/eval_runner.py`, then scores it (`scripts/eval_gate_check.py` — mean `overall` judge score as a percentage) against `eval_baseline.json`. The PR fails and gets a comment with the score breakdown if it drops more than 2 percentage points below the baseline; a PR with no relevant changes passes without any manual step. Current baseline: `eval_baseline.json` (97.50%, avg overall 4.88/5, n=8).
+
+**Updating the baseline on purpose**, when a change genuinely improves the system (not to hide a regression): run the eval locally, then
+
+```bash
+python -m scripts.update_eval_baseline .eval_artifacts/eval_run_<id>.json
+```
+
+It prints the old vs. new score and asks for confirmation before overwriting `eval_baseline.json`. Commit the updated file as part of the same PR.
 
 ## Known limitations
 

@@ -4,6 +4,8 @@ __pycache__/
 .env
  alembic/__pycache__/
 .eval_artifacts/
+eval_result.json
+uvicorn.log
 
  #Claude Code support files
 CLAUDE.md
