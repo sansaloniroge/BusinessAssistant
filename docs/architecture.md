@@ -1,8 +1,9 @@
 # Architecture
 
 This document describes the architecture of the **AI Knowledge Assistant for Enterprises**.
-The system is designed as a multi-tenant RAG platform with strict retrieval guarantees,
-asynchronous ingestion, and full observability.
+The system is a multi-tenant RAG API with strict retrieval guarantees and observability.
+The diagrams below describe the **target** architecture, which includes asynchronous
+ingestion; see "Implementation status" for what is actually built today.
 
 ---
 
@@ -41,13 +42,13 @@ flowchart LR
 **Explanation**
 
 - Users interact with the system through natural language.
-- Admins manage documents and access control.
+- Admins manage documents and access control (target; today documents are loaded with a script).
 - The system never answers without consulting internal documentation.
 - LLMs are used only for reasoning and language generation.
 
 ---
 
-## C4 – Level 2: Container Diagram
+## C4 – Level 2: Container Diagram (target architecture)
 
 ```mermaid
 flowchart TB
@@ -87,13 +88,13 @@ flowchart TB
 **Explanation**
 
 - The API handles authentication, chat orchestration, and evaluation.
-- Document ingestion is fully asynchronous via a worker and queue.
+- Target design: document ingestion is asynchronous via a worker and queue. **Not built yet** — ingestion is currently the synchronous `scripts/ingest_documents.py`.
 - Vector search and relational data are clearly separated.
-- Observability is a first-class concern across API and workers.
+- Observability is a first-class concern across the API (and across workers, once they exist).
 
 ---
 
-## C4 – Level 3: Component Diagram (FastAPI API)
+## C4 – Level 3: Component Diagram (FastAPI API, target architecture)
 
 ```mermaid
 flowchart TB
@@ -136,7 +137,7 @@ flowchart TB
 **Explanation**
 
 - Security context (tenant, role) is resolved before retrieval.
-- Retrieval and reranking are isolated from prompt construction.
+- Retrieval and (optional, not yet implemented) reranking are isolated from prompt construction.
 - Citation validation and run logging ensure traceability.
 - LLM providers are abstracted to allow easy switching.
 
@@ -147,7 +148,7 @@ flowchart TB
 - **LLM is not a source of truth**: documents are.
 - **Retrieval before generation**: always.
 - **Strict isolation between tenants**.
-- **Asynchronous ingestion** for reliability and scalability.
+- **Asynchronous ingestion** for reliability and scalability — a design goal, not yet implemented.
 - **Every answer is traceable** (documents, chunks, cost, latency).
 
 ---
@@ -158,4 +159,4 @@ flowchart TB
 - Not a UI-focused product.
 - Not a fine-tuned model showcase.
 
-This project focuses on **engineering robustness**, **control**, and **production readiness**.
+This project focuses on **engineering robustness** and **control**. It is a portfolio project and has not been run in production.
